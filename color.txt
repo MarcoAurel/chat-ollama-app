@@ -1,0 +1,8 @@
+Paleta de colores para página y gradient:
+#F36F21 (Naranja Luckia), #FFFFFF (Blanco), #666666 (Gris oscuro), #999999 (Gris claro)
+
+background: linear-gradient(135deg, #F36F21 0%, #8E3B96 100%);
+
+
+instruccion logo:
+usa Logo_Luckia.svg que se encuentra en la raiz del proyecto como logo principal, ajustalo en tamaño considerando donde se vaya a utilizar ya que no quiero que el logo quede desproporcionado
