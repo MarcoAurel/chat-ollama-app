@@ -1,0 +1,28 @@
+# Node.js
+node_modules/
+
+# Logs
+*.log
+
+# Env files
+.env
+**/.env
+
+# Vite
+dist/
+.vite/
+
+# Output / Build
+build/
+
+# Editor configs
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker data
+storage/
+data/

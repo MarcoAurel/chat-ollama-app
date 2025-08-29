@@ -1,0 +1,11 @@
+{
+  "informatica": {
+    "password_hash": "$2b$10$d1TrQVVDnW50bRig9tvEseDhZ2o0j5n0M1KB0SwBK.f4OIrbXZ/hW",
+    "agent_config": {
+      "model": "llama3.2:3b",
+      "system_prompt": "Eres un asistente de TI especializado en soporte técnico, redes y soluciones de software.",
+      "temperature": 0.1,
+      "max_tokens": 2000
+    }
+  }
+}
