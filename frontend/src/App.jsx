@@ -5,6 +5,9 @@ import CopyButton from "./components/CopyButton";
 import AutoComplete from "./components/AutoComplete";
 import MessageReactions from "./components/MessageReactions";
 import ToastNotification from "./components/ToastNotification";
+import FileDropZone from "./components/FileDropZone";
+import FilePreview from "./components/FilePreview";
+import useKeyboardShortcuts from "./hooks/useKeyboardShortcuts";
 
 function App() {
   const [area, setArea] = useState("");
@@ -30,6 +33,8 @@ function App() {
   const [searchTerm, setSearchTerm] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [toasts, setToasts] = useState([]);
+  const [attachedFiles, setAttachedFiles] = useState([]);
+  const [showFileDropZone, setShowFileDropZone] = useState(false);
   const chatRef = useRef();
   const inputRef = useRef();
 
@@ -71,48 +76,230 @@ function App() {
     }
   };
 
+  // Handle real streaming
+  const handleRealStreaming = async (currentPrompt, sessionId) => {
+    console.log('📡 handleRealStreaming called with:', { currentPrompt, sessionId });
+    return new Promise((resolve, reject) => {
+      // Create bot message for streaming
+      const botMessageId = Date.now() + Math.random();
+      const botMessage = { 
+        sender: "bot", 
+        text: "",
+        timestamp: getTimestamp(),
+        id: botMessageId,
+        isStreaming: true
+      };
+      setChatHistory(prev => [...prev, botMessage]);
+      console.log('💬 Bot message created with ID:', botMessageId);
+
+      // Use fetch with streaming
+      console.log('🌐 Making fetch request to /api/chat with stream: true');
+      fetch('http://localhost:3001/api/chat', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          area,
+          prompt: currentPrompt,
+          sessionId: sessionId,
+          stream: true  // Enable streaming
+        })
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let fullResponse = '';
+
+        function readStream() {
+          return reader.read().then(({ done, value }) => {
+            if (done) {
+              setChatHistory(prev => 
+                prev.map(msg => 
+                  msg.id === botMessageId 
+                    ? { ...msg, isStreaming: false, text: fullResponse } 
+                    : msg
+                )
+              );
+              resolve(fullResponse);
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                try {
+                  const data = JSON.parse(line.slice(6));
+                  
+                  if (data.type === 'session') {
+                    setCurrentSessionId(data.sessionId);
+                  } else if (data.type === 'chunk') {
+                    fullResponse += data.content;
+                    setChatHistory(prev => 
+                      prev.map(msg => 
+                        msg.id === botMessageId 
+                          ? { ...msg, text: fullResponse } 
+                          : msg
+                      )
+                    );
+                  } else if (data.type === 'done') {
+                    fullResponse = data.fullResponse || fullResponse;
+                    setCurrentSessionId(data.sessionId);
+                    setChatHistory(prev => 
+                      prev.map(msg => 
+                        msg.id === botMessageId 
+                          ? { ...msg, text: fullResponse, isStreaming: false } 
+                          : msg
+                      )
+                    );
+                    resolve(fullResponse);
+                    return;
+                  } else if (data.type === 'error') {
+                    throw new Error(data.message);
+                  }
+                } catch (parseError) {
+                  console.error('Error parsing stream data:', parseError);
+                }
+              }
+            }
+
+            return readStream();
+          });
+        }
+
+        return readStream();
+      })
+      .catch(error => {
+        console.error('Real streaming error:', error);
+        setChatHistory(prev => 
+          prev.map(msg => 
+            msg.id === botMessageId 
+              ? { 
+                  ...msg, 
+                  text: `❌ ${error.message || 'Error en el streaming real'}`, 
+                  isStreaming: false,
+                  isError: true 
+                } 
+              : msg
+          )
+        );
+        reject(error);
+      });
+    });
+  };
+
   const handleSendPrompt = async () => {
-    if (!prompt.trim() || loading) return;
+    if ((!prompt.trim() && attachedFiles.length === 0) || loading) return;
     
     const currentPrompt = prompt;
+    const currentFiles = [...attachedFiles];
     setPrompt("");
+    setAttachedFiles([]);
     setLoading(true);
     setIsTyping(true);
     
+    // Agregar indicador de archivos al mensaje del usuario si los hay
+    const fileIndicator = currentFiles.length > 0 ? ` [📎 ${currentFiles.length} archivo(s)]` : '';
     const userMessage = { 
       sender: "user", 
-      text: currentPrompt, 
+      text: currentPrompt + fileIndicator, 
       timestamp: getTimestamp(),
-      id: Date.now() + Math.random()
+      id: Date.now() + Math.random(),
+      attachedFiles: currentFiles.length > 0 ? currentFiles : null
     };
     setChatHistory(prev => [...prev, userMessage]);
 
+    // Si no hay sesión activa, crear una nueva
+    let sessionId = currentSessionId;
+    if (!sessionId) {
+      try {
+        const sessionRes = await axios.post("/api/history/new-session");
+        sessionId = sessionRes.data.sessionId;
+        setCurrentSessionId(sessionId);
+      } catch (err) {
+        console.error("Failed to create session:", err);
+        sessionId = null;
+      }
+    }
+
     try {
-      const res = await axios.post("/api/chat", {
-        area,
-        prompt: currentPrompt,
-        sessionId: currentSessionId
-      });
+      if (currentFiles.length > 0) {
+        // Usar endpoint con archivos (sin streaming por ahora)
+        const formData = new FormData();
+        formData.append('area', area);
+        formData.append('prompt', currentPrompt);
+        if (sessionId) formData.append('sessionId', sessionId);
+        
+        // Convertir archivos de nuevo a File objects para el backend
+        for (const fileData of currentFiles) {
+          if (fileData.isImage && fileData.preview) {
+            const response = await fetch(fileData.preview);
+            const blob = await response.blob();
+            const file = new File([blob], fileData.name, { type: fileData.type });
+            formData.append('files', file);
+          } else if (fileData.content) {
+            const blob = new Blob([fileData.content], { type: fileData.type });
+            const file = new File([blob], fileData.name, { type: fileData.type });
+            formData.append('files', file);
+          }
+        }
+        
+        const res = await axios.post("/api/chat-with-files", formData, {
+          headers: {
+            'Content-Type': 'multipart/form-data',
+          },
+        });
+
+        // Simular delay de escritura para mejor UX
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        const botMessage = { 
+          sender: "bot", 
+          text: res.data.response,
+          timestamp: getTimestamp(),
+          id: Date.now() + Math.random()
+        };
+        setChatHistory(prev => [...prev, botMessage]);
+        
+        showToast(`Archivos procesados: ${res.data.filesProcessed || currentFiles.length}`, "success");
+      } else {
+        // Usar streaming real
+        console.log('🚀 Starting real streaming...', { currentPrompt, sessionId });
+        await handleRealStreaming(currentPrompt, sessionId);
+        console.log('✅ Real streaming completed');
+      }
       
-      // Simular delay de escritura para mejor UX
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      const botMessage = { 
-        sender: "bot", 
-        text: res.data.response,
-        timestamp: getTimestamp(),
-        id: Date.now() + Math.random()
-      };
-      setChatHistory(prev => [...prev, botMessage]);
     } catch (err) {
+      console.error("Chat error:", err);
+      let errorText = "❌ Error al conectar con el modelo. Intenta nuevamente.";
+      
+      if (err.response?.status === 413) {
+        errorText = "❌ " + (err.response.data.message || "Archivos demasiado grandes");
+      } else if (err.response?.status === 408) {
+        errorText = "❌ Timeout procesando archivos. Intenta con archivos más pequeños.";
+      } else if (err.response?.data?.message) {
+        errorText = "❌ " + err.response.data.message;
+      }
+      
       const errorMessage = { 
         sender: "bot", 
-        text: "❌ Error al conectar con el modelo. Intenta nuevamente.",
+        text: errorText,
         timestamp: getTimestamp(),
         id: Date.now() + Math.random(),
         isError: true
       };
       setChatHistory(prev => [...prev, errorMessage]);
+      
+      showToast("Error enviando mensaje", "error");
     } finally {
       setLoading(false);
       setIsTyping(false);
@@ -131,6 +318,7 @@ function App() {
   // Limpiar chat
   const clearChat = () => {
     setChatHistory([]);
+    clearAttachedFiles();
   };
 
   // === HISTORY FUNCTIONS ===
@@ -295,6 +483,151 @@ function App() {
     // TODO: Send reaction to backend for analytics
   };
 
+  // Handle file selection
+  const handleFileSelect = (files, error) => {
+    if (error) {
+      showToast(error, "error");
+      return;
+    }
+
+    if (files) {
+      setAttachedFiles(prev => [...prev, ...files]);
+      showToast(`${files.length} archivo(s) agregado(s)`, "success");
+    }
+  };
+
+  // Remove attached file
+  const removeAttachedFile = (index) => {
+    setAttachedFiles(prev => {
+      const newFiles = [...prev];
+      // Limpiar URL del objeto si es una imagen
+      if (newFiles[index].preview) {
+        URL.revokeObjectURL(newFiles[index].preview);
+      }
+      newFiles.splice(index, 1);
+      return newFiles;
+    });
+  };
+
+  // Clear all attached files
+  const clearAttachedFiles = () => {
+    attachedFiles.forEach(file => {
+      if (file.preview) {
+        URL.revokeObjectURL(file.preview);
+      }
+    });
+    setAttachedFiles([]);
+  };
+
+  // Keyboard shortcuts configuration
+  const keyboardShortcuts = [
+    {
+      keys: 'ctrl+enter',
+      action: () => {
+        if (loggedIn && (!loading)) {
+          handleSendPrompt();
+        }
+      },
+      allowInInputs: true,
+      description: 'Enviar mensaje'
+    },
+    {
+      keys: 'ctrl+k',
+      action: () => {
+        if (loggedIn) {
+          clearChat();
+          showToast("Chat limpiado", "info");
+        }
+      },
+      description: 'Limpiar chat'
+    },
+    {
+      keys: 'ctrl+n',
+      action: () => {
+        if (loggedIn) {
+          createNewSession();
+        }
+      },
+      description: 'Nueva conversación'
+    },
+    {
+      keys: 'ctrl+h',
+      action: () => {
+        if (loggedIn) {
+          setShowHistory(!showHistory);
+        }
+      },
+      description: 'Abrir/cerrar historial'
+    },
+    {
+      keys: 'ctrl+u',
+      action: () => {
+        if (loggedIn) {
+          setShowFileDropZone(!showFileDropZone);
+        }
+      },
+      description: 'Abrir/cerrar zona de archivos'
+    },
+    {
+      keys: 'ctrl+shift+k',
+      action: () => {
+        if (loggedIn && attachedFiles.length > 0) {
+          clearAttachedFiles();
+          showToast("Archivos eliminados", "info");
+        }
+      },
+      description: 'Limpiar archivos adjuntos'
+    },
+    {
+      keys: 'ctrl+/',
+      action: () => {
+        if (loggedIn) {
+          const shortcuts = keyboardShortcuts
+            .map(s => `${s.keys.toUpperCase()} - ${s.description}`)
+            .join('\n');
+          showToast(`Atajos disponibles:\n${shortcuts}`, "info", 8000);
+        }
+      },
+      description: 'Mostrar atajos de teclado'
+    },
+    {
+      keys: 'alt+t',
+      action: () => {
+        toggleTheme();
+      },
+      description: 'Cambiar tema (claro/oscuro)'
+    },
+    {
+      keys: 'escape',
+      action: () => {
+        if (showHistory) {
+          setShowHistory(false);
+        } else if (showFileDropZone) {
+          setShowFileDropZone(false);
+        }
+      },
+      description: 'Cerrar modales'
+    },
+    {
+      keys: 'ctrl+f',
+      action: () => {
+        if (loggedIn) {
+          setShowHistory(true);
+          setTimeout(() => {
+            const searchInput = document.querySelector('input[placeholder*="Buscar"]');
+            if (searchInput) {
+              searchInput.focus();
+            }
+          }, 100);
+        }
+      },
+      description: 'Buscar en conversaciones'
+    }
+  ];
+
+  // Apply keyboard shortcuts
+  useKeyboardShortcuts(keyboardShortcuts);
+
   // Logout function
   const handleLogout = () => {
     setLoggedIn(false);
@@ -378,8 +711,22 @@ function App() {
               {loggedIn && (
                 <div className="flex items-center space-x-2">
                   <button
+                    onClick={() => {
+                      const shortcuts = keyboardShortcuts
+                        .map(s => `${s.keys.toUpperCase()} - ${s.description}`)
+                        .join('\n');
+                      showToast(`Atajos de teclado:\n${shortcuts}`, "info", 8000);
+                    }}
+                    className="flex items-center space-x-2 p-2 rounded-lg bg-white/20 hover:bg-white/30 dark:bg-white/10 dark:hover:bg-white/20 backdrop-blur-sm transition-all duration-200 text-sm font-medium text-white"
+                    title="Mostrar atajos de teclado (Ctrl+/)"
+                  >
+                    <span className="text-base">⌨️</span>
+                    <span className="hidden sm:inline text-xs">Atajos</span>
+                  </button>
+                  <button
                     onClick={() => setShowHistory(!showHistory)}
                     className="flex items-center space-x-2 p-2 rounded-lg bg-white/20 hover:bg-white/30 dark:bg-white/10 dark:hover:bg-white/20 backdrop-blur-sm transition-all duration-200 text-sm font-medium text-white"
+                    title="Abrir historial (Ctrl+H)"
                   >
                     <span className="text-base">📜</span>
                     <span className="hidden sm:inline text-xs">Historial</span>
@@ -387,6 +734,7 @@ function App() {
                   <button
                     onClick={createNewSession}
                     className="flex items-center space-x-2 p-2 rounded-lg bg-white/20 hover:bg-white/30 dark:bg-white/10 dark:hover:bg-white/20 backdrop-blur-sm transition-all duration-200 text-sm font-medium text-white"
+                    title="Nueva conversación (Ctrl+N)"
                   >
                     <span className="text-base">➕</span>
                     <span className="hidden sm:inline text-xs">Nuevo</span>
@@ -394,6 +742,7 @@ function App() {
                   <button
                     onClick={clearChat}
                     className="flex items-center space-x-2 p-2 rounded-lg bg-white/20 hover:bg-white/30 dark:bg-white/10 dark:hover:bg-white/20 backdrop-blur-sm transition-all duration-200 text-sm font-medium text-white"
+                    title="Limpiar chat (Ctrl+K)"
                   >
                     <span className="text-base">🗑️</span>
                     <span className="hidden sm:inline text-xs">Limpiar</span>
@@ -410,6 +759,7 @@ function App() {
               <button
                 onClick={toggleTheme}
                 className="flex items-center space-x-2 p-2 rounded-lg bg-white/20 hover:bg-white/30 dark:bg-white/10 dark:hover:bg-white/20 backdrop-blur-sm transition-all duration-200 text-sm font-medium text-white"
+                title="Cambiar tema (Alt+T)"
               >
                 <span className="text-base">{darkMode ? "☀️" : "🌙"}</span>
                 <span className="hidden sm:inline text-xs">{darkMode ? "Claro" : "Oscuro"}</span>
@@ -519,7 +869,19 @@ function App() {
                             />
                           </div>
                         {msg.sender === "bot" ? (
-                          <MarkdownMessage content={msg.text} darkMode={darkMode} />
+                          <div className="relative">
+                            {msg.isThinking ? (
+                              <div className="flex items-center space-x-2 text-blue-600 dark:text-blue-400 italic">
+                                <div className="w-4 h-4 border-2 border-blue-600 dark:border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+                                <span>{msg.text}</span>
+                              </div>
+                            ) : (
+                              <MarkdownMessage content={msg.text} darkMode={darkMode} />
+                            )}
+                            {msg.isStreaming && (
+                              <span className="inline-block w-2 h-5 bg-gray-600 dark:bg-gray-300 ml-1 animate-pulse">|</span>
+                            )}
+                          </div>
                         ) : (
                           <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">{msg.text}</p>
                         )}
@@ -569,6 +931,28 @@ function App() {
 
               {/* Chat Input */}
               <div className="p-4 border-t border-gray-200/50 dark:border-gray-600/50">
+                {/* File Preview Section */}
+                {attachedFiles.length > 0 && (
+                  <div className="mb-4">
+                    <FilePreview
+                      files={attachedFiles}
+                      onRemove={removeAttachedFile}
+                      darkMode={darkMode}
+                    />
+                  </div>
+                )}
+
+                {/* File Drop Zone (show when toggled) */}
+                {showFileDropZone && (
+                  <div className="mb-4">
+                    <FileDropZone
+                      onFileSelect={handleFileSelect}
+                      darkMode={darkMode}
+                      disabled={loading}
+                    />
+                  </div>
+                )}
+
                 <div className="flex space-x-3">
                   <div className="flex-1 relative">
                     <AutoComplete
@@ -576,16 +960,44 @@ function App() {
                       onChange={(e) => setPrompt(e.target.value)}
                       onSuggestionSelect={(suggestion) => setPrompt(suggestion)}
                       darkMode={darkMode}
+                      onKeyDown={handleKeyPress}
                     />
                     <div className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xs text-gray-400 dark:text-gray-500 z-10">
                       Enter
                     </div>
                   </div>
+
+                  {/* File Upload Button */}
+                  <button
+                    onClick={() => setShowFileDropZone(!showFileDropZone)}
+                    className={`px-3 py-3 rounded-xl transition-all duration-200 font-medium ${
+                      showFileDropZone 
+                        ? 'bg-orange-500 text-white' 
+                        : 'bg-gray-100/80 dark:bg-gray-700/80 text-gray-600 dark:text-gray-300 hover:bg-gray-200/80 dark:hover:bg-gray-600/80'
+                    }`}
+                    title="Adjuntar archivos (Ctrl+U)"
+                    disabled={loading}
+                  >
+                    📎
+                  </button>
+
+                  {/* Clear Files Button */}
+                  {attachedFiles.length > 0 && (
+                    <button
+                      onClick={clearAttachedFiles}
+                      className="px-3 py-3 bg-red-100/80 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded-xl transition-all duration-200 hover:bg-red-200/80 dark:hover:bg-red-900/50 font-medium"
+                      title="Limpiar archivos (Ctrl+Shift+K)"
+                      disabled={loading}
+                    >
+                      🗑️
+                    </button>
+                  )}
+
                   <button
                     onClick={handleSendPrompt}
-                    disabled={!prompt.trim() || loading}
+                    disabled={(!prompt.trim() && attachedFiles.length === 0) || loading}
                     className="px-6 py-3 text-white rounded-xl transition-all duration-200 transform hover:scale-105 active:scale-95 disabled:scale-100 disabled:cursor-not-allowed font-medium disabled:opacity-50 disabled:bg-gray-400"
-                    style={!prompt.trim() || loading ? {backgroundColor: '#9CA3AF'} : {background: 'linear-gradient(135deg, #F36F21 0%, #8E3B96 100%)'}}
+                    style={(!prompt.trim() && attachedFiles.length === 0) || loading ? {backgroundColor: '#9CA3AF'} : {background: 'linear-gradient(135deg, #F36F21 0%, #8E3B96 100%)'}}
                   >
                     {loading ? (
                       <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>

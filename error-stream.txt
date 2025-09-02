@@ -1,0 +1,24 @@
+[vite] connected from window dbf74c76-3d9c-4579-a93e-4cd0a32b82dd:68:11
+[vite] new window visibility hidden dbf74c76-3d9c-4579-a93e-4cd0a32b82dd:64:12
+[vite] new window visibility visible dbf74c76-3d9c-4579-a93e-4cd0a32b82dd:64:12
+[vite] new window visibility hidden dbf74c76-3d9c-4579-a93e-4cd0a32b82dd:64:12
+[vite] connecting... client:733:9
+[vite] connected. client:827:12
+Download the React DevTools for a better development experience: https://react.dev/link/react-devtools react-dom_client.js:17995:54
+API Request: POST /api/login axios.js:7:15
+API Response: 200 /api/login axios.js:17:15
+API Request: GET /api/history/sessions axios.js:7:15
+API Response: 200 /api/history/sessions axios.js:17:15
+API Request: POST /api/history/new-session axios.js:7:15
+API Response: 200 /api/history/new-session axios.js:17:15
+🚀 Starting real streaming... 
+Object { currentPrompt: "¿Cómo solucionar problemas de conexión a Internet?", sessionId: "c5375da4-38aa-46c5-aafc-968c6a052676" }
+App.jsx:244:17
+📡 handleRealStreaming called with: 
+Object { currentPrompt: "¿Cómo solucionar problemas de conexión a Internet?", sessionId: "c5375da4-38aa-46c5-aafc-968c6a052676" }
+App.jsx:84:13
+💬 Bot message created with ID: 1756764277489.2646 App.jsx:95:15
+🌐 Making fetch request to /api/chat with stream: true App.jsx:96:15
+Solicitud de origen cruzado bloqueada: La misma política de origen no permite la lectura de recursos remotos en ‘http://localhost:3001/api/chat’. (Razón: La credencial no está soportada si la cabecera CORS 'Access-Control-Allow-Origin' es '*').
+Real streaming error: TypeError: NetworkError when attempting to fetch resource. App.jsx:168:17
+Chat error: TypeError: NetworkError when attempting to fetch resource. App.jsx:249:15

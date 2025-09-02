@@ -1,0 +1,45 @@
+# ================================
+# 🎨 Luckia Chat - Frontend Docker
+# Multi-stage build for production
+# ================================
+
+# Stage 1: Build environment
+FROM node:18-alpine AS builder
+WORKDIR /app
+
+# Copy package files
+COPY frontend/package*.json ./
+RUN npm ci
+
+# Copy source code and build
+COPY frontend/ .
+RUN npm run build
+
+# Stage 2: Production server
+FROM nginx:alpine AS production
+
+# Install security updates
+RUN apk update && apk upgrade
+
+# Copy built application
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# Copy custom Nginx configuration
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# Create non-root user for security
+RUN addgroup -g 1001 -S nginx-group && \
+    adduser -S luckia -u 1001 -G nginx-group
+
+# Set proper permissions
+RUN chown -R luckia:nginx-group /usr/share/nginx/html && \
+    chmod -R 755 /usr/share/nginx/html
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost/ || exit 1
+
+EXPOSE 80
+
+# Start Nginx
+CMD ["nginx", "-g", "daemon off;"]

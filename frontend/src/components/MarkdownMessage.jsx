@@ -28,7 +28,7 @@ const MarkdownMessage = ({ content, darkMode = false }) => {
 
     if (!inline && match) {
       return (
-        <div className="relative group">
+        <div className="relative group my-4 overflow-hidden rounded-lg border border-gray-200 dark:border-gray-600">
           {/* Copy button */}
           <button
             onClick={() => copyToClipboard(codeString)}
@@ -51,14 +51,17 @@ const MarkdownMessage = ({ content, darkMode = false }) => {
             PreTag="div"
             className="!mt-0 !mb-4"
             showLineNumbers={codeString.split('\n').length > 5}
-            wrapLines={true}
-            wrapLongLines={true}
+            wrapLines={false}
+            wrapLongLines={false}
             customStyle={{
               borderRadius: '8px',
               padding: '1rem',
               paddingTop: language ? '2.5rem' : '1rem',
               fontSize: '14px',
-              lineHeight: '1.4'
+              lineHeight: '1.4',
+              overflow: 'auto',
+              overflowX: 'auto',
+              maxWidth: '100%'
             }}
             {...props}
           >
@@ -71,7 +74,11 @@ const MarkdownMessage = ({ content, darkMode = false }) => {
     // Inline code
     return (
       <code
-        className="bg-gray-100 dark:bg-gray-700 px-1 py-0.5 rounded text-sm font-mono text-gray-800 dark:text-gray-200"
+        className="bg-gray-100 dark:bg-gray-700 px-1 py-0.5 rounded text-sm font-mono text-gray-800 dark:text-gray-200 break-all"
+        style={{
+          wordBreak: 'break-all',
+          overflowWrap: 'break-word'
+        }}
         {...props}
       >
         {children}
@@ -80,7 +87,7 @@ const MarkdownMessage = ({ content, darkMode = false }) => {
   };
 
   return (
-    <div className="markdown-content prose dark:prose-invert max-w-none">
+    <div className="markdown-content prose dark:prose-invert max-w-none overflow-hidden">
       <ReactMarkdown
         components={{
           code: CodeBlock,

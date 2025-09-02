@@ -1,0 +1,164 @@
+# ================================
+# 🎯 EasyPanel Configuration
+# Luckia Chat IA - Production Ready
+# ================================
+
+name: luckia-chat
+services:
+  # 🤖 Ollama Service
+  - type: app
+    name: ollama
+    image:
+      name: ollama/ollama:latest
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+    ports:
+      - target: 11434
+        published: 11434
+        protocol: tcp
+    env:
+      - OLLAMA_ORIGINS=*
+    volumes:
+      - type: volume
+        source: ollama_data
+        target: /root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # 🎨 Frontend Service
+  - type: app
+    name: frontend
+    image:
+      dockerfile: Dockerfile.frontend
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+    domains:
+      - host: chat.luckia.com  # Change to your domain
+        port: 80
+        path: /
+    env:
+      - NODE_ENV=production
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # 🔧 Backend Service
+  - type: app
+    name: backend
+    image:
+      dockerfile: Dockerfile.backend
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+    domains:
+      - host: api.chat.luckia.com  # Change to your API domain
+        port: 3001
+        path: /api
+    env:
+      - NODE_ENV=production
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - AREA_CONFIG_PATH=/app/backend/config/area_config.json
+      - SESSION_SECRET=${SESSION_SECRET}
+    volumes:
+      - type: bind
+        source: ./data/database
+        target: /app/database
+      - type: bind
+        source: ./data/logs
+        target: /app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+# 🌐 Network Configuration  
+networks:
+  default:
+    external: true
+    name: easypanel
+
+# 💾 Volumes
+volumes:
+  ollama_data:
+    driver: local
+  database:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/database
+  logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/logs
+
+# 🔍 Metadata for EasyPanel
+metadata:
+  name: "Luckia Chat IA"
+  description: "Sistema de chat inteligente con Ollama"
+  version: "3.0.0"
+  author: "Luckia IT Team"
+  category: "ai-chat"
+  tags: ["ollama", "ai", "chat", "luckia"]
+  
+  # Resource requirements
+  resources:
+    frontend:
+      cpu: "0.5"
+      memory: "512M"
+    backend:
+      cpu: "1.0"
+      memory: "1G"
+  
+  # Port configuration
+  ports:
+    - name: "web"
+      port: 80
+      description: "Web interface"
+    - name: "api"  
+      port: 3001
+      description: "REST API"
+      
+  # Environment variables for EasyPanel UI
+  environment:
+    - name: "OLLAMA_BASE_URL"
+      label: "Ollama Server URL"
+      description: "URL completa del servidor Ollama (ej: http://192.168.1.206:11434)"
+      type: "string"
+      required: true
+      default: "http://ollama:11434"
+    
+    - name: "SESSION_SECRET"
+      label: "Session Secret Key"
+      description: "Clave secreta para encriptar sesiones (generar clave segura)"
+      type: "password"
+      required: true
+      
+    - name: "DOMAIN"
+      label: "Domain Name"
+      description: "Dominio principal donde se desplegará la aplicación"
+      type: "string"
+      default: "chat.luckia.com"
+      
+  # Backup configuration
+  backup:
+    - path: "/app/database"
+      schedule: "0 2 * * *"  # Daily at 2 AM
+      retention: "7d"

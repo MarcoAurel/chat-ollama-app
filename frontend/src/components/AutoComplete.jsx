@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-const AutoComplete = ({ value, onChange, onSuggestionSelect, darkMode = false }) => {
+const AutoComplete = ({ value, onChange, onSuggestionSelect, onKeyDown, darkMode = false }) => {
   const [suggestions, setSuggestions] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [activeSuggestion, setActiveSuggestion] = useState(-1);
@@ -55,22 +55,31 @@ const AutoComplete = ({ value, onChange, onSuggestionSelect, darkMode = false })
   };
 
   const handleKeyDown = (e) => {
-    if (!showSuggestions) return;
-
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      setActiveSuggestion(prev => 
-        prev < suggestions.length - 1 ? prev + 1 : prev
-      );
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      setActiveSuggestion(prev => prev > 0 ? prev - 1 : -1);
-    } else if (e.key === 'Enter' && activeSuggestion >= 0) {
-      e.preventDefault();
-      handleSuggestionClick(suggestions[activeSuggestion]);
-    } else if (e.key === 'Escape') {
-      setShowSuggestions(false);
-      setActiveSuggestion(-1);
+    if (showSuggestions) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setActiveSuggestion(prev => 
+          prev < suggestions.length - 1 ? prev + 1 : prev
+        );
+        return;
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setActiveSuggestion(prev => prev > 0 ? prev - 1 : -1);
+        return;
+      } else if (e.key === 'Enter' && activeSuggestion >= 0) {
+        e.preventDefault();
+        handleSuggestionClick(suggestions[activeSuggestion]);
+        return;
+      } else if (e.key === 'Escape') {
+        setShowSuggestions(false);
+        setActiveSuggestion(-1);
+        return;
+      }
+    }
+    
+    // Pasar el evento al componente padre si no se manejó aquí
+    if (onKeyDown) {
+      onKeyDown(e);
     }
   };
 

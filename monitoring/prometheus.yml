@@ -1,0 +1,62 @@
+# ================================
+# 📊 Prometheus Configuration
+# Luckia Chat Monitoring
+# ================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'luckia-chat'
+    environment: 'production'
+
+# Rules and alerting
+rule_files:
+  - "rules/*.yml"
+
+# Alerting configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+# Service discovery and scraping
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+    scrape_interval: 30s
+
+  # Luckia Chat Backend
+  - job_name: 'luckia-backend'
+    static_configs:
+      - targets: ['backend:3001']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    
+  # Luckia Chat Frontend (Nginx metrics if enabled)
+  - job_name: 'luckia-frontend'
+    static_configs:
+      - targets: ['frontend:80']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    scrape_timeout: 10s
+
+  # Health checks monitoring
+  - job_name: 'health-checks'
+    static_configs:
+      - targets: 
+          - 'backend:3001'
+          - 'frontend:80'
+    metrics_path: '/health'
+    scrape_interval: 10s
+    scrape_timeout: 5s
+
+  # System metrics (if node_exporter is available)
+  - job_name: 'system-metrics'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    scrape_interval: 30s
+    scrape_timeout: 10s

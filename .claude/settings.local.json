@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install)",
+      "Bash(node:*)",
+      "Bash(npm run dev:*)",
+      "Bash(chmod:*)",
+      "Bash(npm install:*)",
+      "Bash(curl:*)",
+      "Bash(taskkill:*)",
+      "Bash(cmd /c:*)",
+      "Bash(PORT=3002 node index.js)",
+      "Bash(cmd.exe:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

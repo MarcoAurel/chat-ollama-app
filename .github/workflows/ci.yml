@@ -1,0 +1,238 @@
+# ================================
+# 🚀 CI/CD Pipeline - Luckia Chat
+# Automated testing and deployment
+# ================================
+
+name: 🎬 Luckia Chat CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  NODE_VERSION: '18'
+  REGISTRY: ghcr.io
+  IMAGE_NAME_FRONTEND: luckia-chat-frontend
+  IMAGE_NAME_BACKEND: luckia-chat-backend
+
+jobs:
+  # 🧪 Testing Jobs
+  test-backend:
+    name: 🔧 Backend Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📦 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 📋 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: backend/package-lock.json
+        
+    - name: 🔧 Install dependencies
+      working-directory: ./backend
+      run: npm ci
+      
+    - name: 🧪 Run tests
+      working-directory: ./backend
+      run: npm test
+      
+    - name: 📊 Upload coverage reports
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./backend/coverage/lcov.info
+        flags: backend
+        name: backend-coverage
+        
+  test-frontend:
+    name: 🎨 Frontend Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📦 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 📋 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+        
+    - name: 🔧 Install dependencies
+      working-directory: ./frontend
+      run: npm ci
+      
+    - name: 🏗️ Build frontend
+      working-directory: ./frontend
+      run: npm run build
+      
+    - name: 🧪 Run tests
+      working-directory: ./frontend
+      run: npm test
+      
+    - name: 📊 Upload coverage reports
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./frontend/coverage/lcov.info
+        flags: frontend
+        name: frontend-coverage
+
+  # 🔍 Code Quality
+  code-quality:
+    name: 🔍 Code Quality
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📦 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 📋 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        
+    - name: 🧹 Lint frontend
+      working-directory: ./frontend
+      run: |
+        npm ci
+        npm run lint
+        
+    - name: 🔒 Security audit
+      run: |
+        cd backend && npm audit --audit-level=high
+        cd ../frontend && npm audit --audit-level=high
+
+  # 🏗️ Build Docker Images
+  build-images:
+    name: 🐳 Build Docker Images
+    runs-on: ubuntu-latest
+    needs: [test-backend, test-frontend, code-quality]
+    if: github.event_name == 'push'
+    
+    permissions:
+      contents: read
+      packages: write
+      
+    strategy:
+      matrix:
+        include:
+          - service: backend
+            dockerfile: Dockerfile.backend
+            image: ${{ env.REGISTRY }}/luckia-chat-backend
+          - service: frontend
+            dockerfile: Dockerfile.frontend
+            image: ${{ env.REGISTRY }}/luckia-chat-frontend
+            
+    steps:
+    - name: 📦 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🐳 Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: 🔑 Login to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: 🏷️ Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ matrix.image }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix=sha-
+          type=raw,value=latest,enable={{is_default_branch}}
+          
+    - name: 🏗️ Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ${{ matrix.dockerfile }}
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64,linux/arm64
+
+  # 🚀 Deploy to Staging
+  deploy-staging:
+    name: 🎭 Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build-images]
+    if: github.ref == 'refs/heads/develop'
+    environment: staging
+    
+    steps:
+    - name: 📦 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🚀 Deploy to staging
+      run: |
+        echo "🎭 Deploying to staging environment..."
+        echo "This would trigger deployment to staging server"
+        # Here you would add your actual deployment commands
+        # For EasyPanel, this might be an API call or webhook
+
+  # 🌟 Deploy to Production
+  deploy-production:
+    name: 🌟 Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build-images]
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    
+    steps:
+    - name: 📦 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🏥 Health check before deployment
+      run: |
+        echo "🏥 Running pre-deployment health checks..."
+        node healthcheck.js || exit 1
+        
+    - name: 🌟 Deploy to production
+      run: |
+        echo "🌟 Deploying to production environment..."
+        echo "This would trigger deployment to production server"
+        # Here you would add your actual deployment commands
+        
+    - name: 🏥 Post-deployment health check
+      run: |
+        echo "🏥 Running post-deployment health checks..."
+        sleep 30  # Wait for services to start
+        node healthcheck.js || exit 1
+        
+    - name: 📢 Deployment notification
+      if: success()
+      run: |
+        echo "✅ Production deployment successful!"
+        echo "🚀 Luckia Chat is now live!"
+
+  # 📊 Performance Tests (Optional)
+  performance-tests:
+    name: 📊 Performance Tests
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    if: github.ref == 'refs/heads/develop'
+    
+    steps:
+    - name: 📦 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 📊 Run load tests
+      run: |
+        echo "📊 Running performance tests..."
+        echo "This would run load tests against staging environment"
+        # You could use k6, Artillery, or other load testing tools here
