@@ -1,0 +1,50 @@
+PsExec es una herramienta poderosa que te permite ejecutar comandos remotos en sistemas operativos Windows sin necesidad de tener acceso a la consola del sistema. Aquí te explico cómo utilizar PsExec para instalar software remotamente:
+
+**Requisitos previos**
+
+* PsExec debe estar instalado en el sistema que se va a utilizar como servidor.
+* Debes tener permisos de administrador en el sistema objetivo (el sistema al que vas a instalar el software).
+* El software que deseas instalar debe estar disponible en la carpeta de descarga del sistema objetivo.
+
+**Uso básico de PsExec**
+
+1. Abre una ventana de comandos como administrador.
+2. Escribe el comando `psexec` seguido de los siguientes parámetros:
+	* `\system32\WindowsPowerShell\v1.0\powershell.exe`
+	* `-Command`
+	* `& "C:\Path\To\Software\Installer.exe" -Install`
+3. Presiona Enter para ejecutar el comando.
+
+**Ejemplo con PsExec**
+
+Supongamos que deseas instalar un software llamado `SoftwareInstaller.exe` en un sistema remoto con la dirección IP `192.168.1.100`. El software se encuentra en la carpeta de descarga del sistema objetivo (`C:\Path\To\Software\`). Para instalarlo, puedes utilizar el comando siguiente:
+```
+psexec \system32\WindowsPowerShell\v1.0\powershell.exe -Command "& {New-Object System.Net.WebClient}.DownloadFile('http://192.168.1.100/SoftwareInstaller.exe', 'C:\Path\To\Software\SoftwareInstaller.exe'); & 'C:\Path\To\Software\SoftwareInstaller.exe' -Install}"
+```
+Este comando descarga el archivo `SoftwareInstaller.exe` desde la dirección IP del sistema objetivo y lo instala en la carpeta de descarga.
+
+**Uso con PsExec remoto**
+
+Si deseas utilizar PsExec para instalar software en múltiples sistemas remotos, puedes crear un script que utilice PsExec para ejecutar el comando. Por ejemplo:
+```
+@echo off
+
+:: Lista de direcciones IP de los sistemas a instalar
+set "sistemas=192.168.1.100 192.168.1.101 192.168.1.102"
+
+:: Ruta del software a instalar
+set "rutaSoftware=C:\Path\To\Software\"
+
+:: Comando para instalar el software
+set "comando=& 'C:\Path\To\Software\SoftwareInstaller.exe' -Install"
+
+:: Utiliza PsExec para ejecutar el comando en cada sistema
+for /f "tokens=*" %%s in ('ping -n 1 %system%') do (
+    psexec \system32\WindowsPowerShell\v1.0\powershell.exe -Command "& {New-Object System.Net.WebClient}.DownloadFile('http://%system%/SoftwareInstaller.exe', '%rutaSoftware%\SoftwareInstaller.exe'); & '%rutaSoftware%\SoftwareInstaller.exe' -Install}"
+)
+```
+Este script utiliza PsExec para instalar el software en cada sistema de la lista. Recuerda reemplazar las direcciones IP y la ruta del software con los valores correspondientes.
+
+**Conclusión**
+
+PsExec es una herramienta poderosa que te permite ejecutar comandos remotos en sistemas operativos Windows sin necesidad de tener acceso a la consola del sistema. Con PsExec, puedes instalar software remotamente en múltiples sistemas de manera eficiente y segura. Asegúrate de seguir las mejores prácticas de seguridad al utilizar PsExec para evitar problemas de seguridad.

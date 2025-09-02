@@ -110,16 +110,21 @@ const upload = multer({
       'application/pdf',
       'application/msword',
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/octet-stream', // DOCX sometimes detected as this
       'image/png',
       'image/jpeg',
       'image/gif',
       'image/webp'
     ];
     
-    if (allowedTypes.includes(file.mimetype)) {
+    // Additional check by file extension for problematic MIME types
+    const ext = file.originalname.toLowerCase().split('.').pop();
+    const allowedExtensions = ['txt', 'md', 'csv', 'json', 'pdf', 'doc', 'docx', 'png', 'jpg', 'jpeg', 'gif', 'webp'];
+    
+    if (allowedTypes.includes(file.mimetype) || allowedExtensions.includes(ext)) {
       cb(null, true);
     } else {
-      cb(new Error(`Tipo de archivo no permitido: ${file.mimetype}`), false);
+      cb(new Error(`Tipo de archivo no permitido: ${file.mimetype} (extensión: ${ext})`), false);
     }
   }
 });
@@ -212,6 +217,14 @@ async function initializeApp() {
     const configPath = path.resolve(AREA_CONFIG_PATH);
     const data = fs.readFileSync(configPath, 'utf-8');
     areas = JSON.parse(data);
+    
+    // Initialize Qdrant
+    const qdrant = require('./config/qdrant');
+    await qdrant.initialize();
+    
+    // Initialize Embedding Service
+    const embeddingService = require('./services/embeddings');
+    await embeddingService.initialize();
     logger.info('Configuration loaded successfully', { 
       areasCount: Object.keys(areas).length,
       areas: Object.keys(areas) 
@@ -532,12 +545,43 @@ app.post('/api/chat', validateChat, handleValidationErrors, async (req, res) => 
       // Send session ID immediately
       res.write(`data: ${JSON.stringify({ type: 'session', sessionId: currentSessionId })}\n\n`);
       
+      // 🧠 RAG: Search for relevant documents
+      let ragContext = '';
+      try {
+        const qdrant = require('./config/qdrant');
+        const searchResults = await qdrant.searchDocuments(prompt, area, 3);
+        
+        if (searchResults && searchResults.length > 0) {
+          logger.info('📚 RAG: Found relevant documents', { 
+            count: searchResults.length, 
+            query: prompt.substring(0, 100) + '...' 
+          });
+          
+          ragContext = '\n🔍 CONTEXTO RELEVANTE DE DOCUMENTOS:\n';
+          ragContext += '='.repeat(50) + '\n';
+          
+          searchResults.forEach((doc, index) => {
+            ragContext += `📄 DOCUMENTO ${index + 1} (relevancia: ${(doc.score * 100).toFixed(1)}%):\n`;
+            ragContext += `${doc.content.substring(0, 800)}${doc.content.length > 800 ? '...' : ''}\n\n`;
+          });
+          
+          ragContext += '='.repeat(50) + '\n';
+          ragContext += '✨ INSTRUCCIÓN: Responde basándote principalmente en el contexto proporcionado. Si la información no está disponible en el contexto, indícalo claramente.\n\n';
+        }
+      } catch (ragError) {
+        logger.error('RAG search failed', { error: ragError.message });
+        // Continue without RAG if search fails
+      }
+      
+      // Combine original prompt with RAG context
+      const enhancedPrompt = prompt + ragContext;
+      
       const response = await axios({
         method: 'POST',
         url: `${OLLAMA_BASE_URL}/api/generate`,
         data: {
           model: config.model,
-          prompt,
+          prompt: enhancedPrompt,
           system: config.system_prompt,
           options: {
             temperature: config.temperature,
@@ -623,11 +667,42 @@ app.post('/api/chat', validateChat, handleValidationErrors, async (req, res) => 
     }
     
     // Non-streaming response (original behavior)
+    // 🧠 RAG: Search for relevant documents (non-streaming)
+    let ragContext = '';
+    try {
+      const qdrant = require('./config/qdrant');
+      const searchResults = await qdrant.searchDocuments(prompt, area, 3);
+      
+      if (searchResults && searchResults.length > 0) {
+        logger.info('📚 RAG: Found relevant documents (non-streaming)', { 
+          count: searchResults.length, 
+          query: prompt.substring(0, 100) + '...' 
+        });
+        
+        ragContext = '\n🔍 CONTEXTO RELEVANTE DE DOCUMENTOS:\n';
+        ragContext += '='.repeat(50) + '\n';
+        
+        searchResults.forEach((doc, index) => {
+          ragContext += `📄 DOCUMENTO ${index + 1} (relevancia: ${(doc.score * 100).toFixed(1)}%):\n`;
+          ragContext += `${doc.content.substring(0, 800)}${doc.content.length > 800 ? '...' : ''}\n\n`;
+        });
+        
+        ragContext += '='.repeat(50) + '\n';
+        ragContext += '✨ INSTRUCCIÓN: Responde basándote principalmente en el contexto proporcionado. Si la información no está disponible en el contexto, indícalo claramente.\n\n';
+      }
+    } catch (ragError) {
+      logger.error('RAG search failed (non-streaming)', { error: ragError.message });
+      // Continue without RAG if search fails
+    }
+    
+    // Combine original prompt with RAG context
+    const enhancedPrompt = prompt + ragContext;
+    
     const ollamaRes = await axios.post(
       `${OLLAMA_BASE_URL}/api/generate`,
       {
         model: config.model,
-        prompt,
+        prompt: enhancedPrompt,
         system: config.system_prompt,
         options: {
           temperature: config.temperature,
@@ -733,12 +808,43 @@ app.post('/api/chat-stream', validateChat, handleValidationErrors, async (req, r
     // Send session ID immediately
     res.write(`data: ${JSON.stringify({ type: 'session', sessionId: currentSessionId })}\n\n`);
     
+    // 🧠 RAG: Search for relevant documents
+    let ragContext = '';
+    try {
+      const qdrant = require('./config/qdrant');
+      const searchResults = await qdrant.searchDocuments(prompt, area, 3);
+      
+      if (searchResults && searchResults.length > 0) {
+        logger.info('📚 RAG: Found relevant documents', { 
+          count: searchResults.length, 
+          query: prompt.substring(0, 100) + '...' 
+        });
+        
+        ragContext = '\n🔍 CONTEXTO RELEVANTE DE DOCUMENTOS:\n';
+        ragContext += '='.repeat(50) + '\n';
+        
+        searchResults.forEach((doc, index) => {
+          ragContext += `📄 DOCUMENTO ${index + 1} (relevancia: ${(doc.score * 100).toFixed(1)}%):\n`;
+          ragContext += `${doc.content.substring(0, 800)}${doc.content.length > 800 ? '...' : ''}\n\n`;
+        });
+        
+        ragContext += '='.repeat(50) + '\n';
+        ragContext += '✨ INSTRUCCIÓN: Responde basándote principalmente en el contexto proporcionado. Si la información no está disponible en el contexto, indícalo claramente.\n\n';
+      }
+    } catch (ragError) {
+      logger.error('RAG search failed', { error: ragError.message });
+      // Continue without RAG if search fails
+    }
+    
+    // Combine original prompt with RAG context
+    const enhancedPrompt = prompt + ragContext;
+    
     const response = await axios({
       method: 'POST',
       url: `${OLLAMA_BASE_URL}/api/generate`,
       data: {
         model: config.model,
-        prompt,
+        prompt: enhancedPrompt,
         system: config.system_prompt,
         options: {
           temperature: config.temperature,
@@ -1118,6 +1224,138 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     uptime: process.uptime()
   });
+});
+
+// Qdrant endpoints
+app.get('/api/qdrant/status', async (req, res) => {
+  try {
+    const qdrant = require('./config/qdrant');
+    const status = await qdrant.testConnection();
+    res.json(status);
+  } catch (error) {
+    logger.error('Qdrant status check failed', { error: error.message });
+    res.status(500).json({
+      status: 'error',
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/qdrant/stats', async (req, res) => {
+  try {
+    const qdrant = require('./config/qdrant');
+    const stats = await qdrant.getStats();
+    res.json(stats);
+  } catch (error) {
+    logger.error('Qdrant stats failed', { error: error.message });
+    res.status(500).json({
+      status: 'error', 
+      error: error.message
+    });
+  }
+});
+
+// Document management endpoints
+app.post('/api/documents/upload', upload.array('documents', 10), async (req, res) => {
+  try {
+    const { area = 'general' } = req.body;
+    
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: 'No files uploaded' });
+    }
+
+    logger.info('📄 Processing document upload', { 
+      fileCount: req.files.length,
+      area,
+      ip: req.ip
+    });
+
+    const results = [];
+    const documentProcessor = require('./services/documentProcessor');
+    const qdrant = require('./config/qdrant');
+
+    for (const file of req.files) {
+      try {
+        // Process document
+        const documents = await documentProcessor.processDocument(
+          file.buffer,
+          file.originalname,
+          area,
+          { uploader_ip: req.ip }
+        );
+
+        // Add to Qdrant
+        for (const doc of documents) {
+          await qdrant.addDocument(doc.id, doc.content, doc.metadata, area);
+        }
+
+        results.push({
+          filename: file.originalname,
+          status: 'success',
+          chunks: documents.length,
+          size: file.size
+        });
+
+      } catch (error) {
+        logger.error('Document processing failed', {
+          filename: file.originalname,
+          error: error.message
+        });
+        
+        results.push({
+          filename: file.originalname,
+          status: 'error',
+          error: error.message
+        });
+      }
+    }
+
+    res.json({
+      message: 'Document processing completed',
+      results,
+      processed: results.filter(r => r.status === 'success').length,
+      failed: results.filter(r => r.status === 'error').length
+    });
+
+  } catch (error) {
+    logger.error('Document upload failed', { error: error.message });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/documents/search', async (req, res) => {
+  try {
+    const { query, area, limit = 5 } = req.query;
+    
+    if (!query) {
+      return res.status(400).json({ error: 'Query parameter required' });
+    }
+
+    const qdrant = require('./config/qdrant');
+    const results = await qdrant.searchDocuments(query, area, parseInt(limit));
+
+    res.json({
+      query,
+      area: area || 'all',
+      results,
+      count: results.length
+    });
+
+  } catch (error) {
+    logger.error('Document search failed', { error: error.message });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/embeddings/test', async (req, res) => {
+  try {
+    const embeddingService = require('./services/embeddings');
+    const result = await embeddingService.testEmbedding();
+    res.json(result);
+  } catch (error) {
+    logger.error('Embedding test failed', { error: error.message });
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.listen(port, () => {

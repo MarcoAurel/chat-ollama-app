@@ -1,0 +1,35 @@
+Guía de Troubleshooting para Servidores Windows
+
+Esta es una guía completa para resolver problemas comunes en servidores Windows.
+
+1. Problemas de red
+   - Verificar conectividad: ping google.com
+   - Comprobar DNS: nslookup domain.com
+   - Revisar configuración IP: ipconfig /all
+
+2. Problemas de rendimiento
+   - Monitorear CPU: Usar Task Manager o Performance Monitor
+   - Verificar memoria RAM: Revisar uso en Task Manager
+   - Comprobar disco duro: chkdsk /f C:
+
+3. Servicios Windows
+   - Verificar estado: services.msc
+   - Reiniciar servicios: net stop servicename && net start servicename
+   - Logs de eventos: eventvwr.msc
+
+4. Problemas de IIS
+   - Verificar estado de aplicaciones: Administrador de IIS
+   - Revisar logs: C:\inetpub\logs\LogFiles
+   - Reiniciar IIS: iisreset
+
+5. Base de datos SQL Server
+   - Verificar conexiones: SQL Server Management Studio
+   - Revisar logs de SQL: SQL Server Error Log
+   - Comprobar servicios: SQL Server Configuration Manager
+
+6. Active Directory
+   - Verificar replicación: repadmin /showrepl
+   - Comprobar FSMO roles: netdom query fsmo
+   - Diagnóstico: dcdiag /v
+
+Esta guía proporciona comandos básicos para diagnosticar y resolver problemas comunes en infraestructura Windows Server.

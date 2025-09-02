@@ -10,7 +10,8 @@
       "Bash(taskkill:*)",
       "Bash(cmd /c:*)",
       "Bash(PORT=3002 node index.js)",
-      "Bash(cmd.exe:*)"
+      "Bash(cmd.exe:*)",
+      "Read(d:\\Proyectos\\chat-ollama-app/**)"
     ],
     "deny": [],
     "ask": []
