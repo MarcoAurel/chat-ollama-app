@@ -35,6 +35,7 @@ function App() {
   const [toasts, setToasts] = useState([]);
   const [attachedFiles, setAttachedFiles] = useState([]);
   const [showFileDropZone, setShowFileDropZone] = useState(false);
+  const [brandingConfig, setBrandingConfig] = useState(null);
   const chatRef = useRef();
   const inputRef = useRef();
 
@@ -647,6 +648,35 @@ function App() {
     });
   };
 
+  // Cargar configuración de branding
+  const loadBrandingConfig = async () => {
+    try {
+      const response = await axios.get('/api/branding');
+      setBrandingConfig(response.data);
+      
+      // Aplicar configuración de tema si existe
+      if (response.data?.branding?.theme) {
+        const theme = response.data.branding.theme;
+        document.documentElement.style.setProperty('--primary-color', theme.primary_color);
+        document.documentElement.style.setProperty('--accent-color', theme.accent_color);
+        document.documentElement.style.setProperty('--background-color', theme.background_color);
+        document.documentElement.style.setProperty('--text-color', theme.text_color);
+      }
+
+      // Actualizar título del documento
+      if (response.data?.branding?.app?.name) {
+        document.title = response.data.branding.app.name;
+      }
+    } catch (error) {
+      console.error('Error loading branding config:', error);
+      // Usar valores por defecto si no se puede cargar la configuración
+    }
+  };
+
+  useEffect(() => {
+    loadBrandingConfig();
+  }, []);
+
   // Función para alternar modo oscuro/claro
   const toggleTheme = () => {
     const newTheme = !darkMode;
@@ -704,7 +734,10 @@ function App() {
                 <img src="/Logo_Luckia.svg" alt="Luckia" className="w-full h-full object-contain" />
               </div>
               <h1 className="text-lg font-semibold text-white drop-shadow-lg">
-                {loggedIn ? `Luckia Chat - Informática` : 'Luckia Chat - Login'}
+                {loggedIn ? 
+                  `${brandingConfig?.branding?.app?.name || 'Luckia Chat'} - ${agentConfig?.agent_name || brandingConfig?.branding?.app?.agent_name || 'Informática'}` : 
+                  `${brandingConfig?.branding?.app?.name || 'Luckia Chat'} - Login`
+                }
               </h1>
             </div>
             <div className="flex items-center space-x-2">
@@ -846,7 +879,7 @@ function App() {
                           <div className="w-6 h-6 bg-white rounded-full flex items-center justify-center p-1">
                             <img src="/Logo_Luckia.svg" alt="Luckia" className="w-full h-full object-contain" />
                           </div>
-                          <span className="text-xs text-gray-500 dark:text-gray-400">Luckia Chat</span>
+                          <span className="text-xs text-gray-500 dark:text-gray-400">{brandingConfig?.branding?.app?.name || 'Luckia Chat'}</span>
                         </div>
                       )}
                       <div className="relative">

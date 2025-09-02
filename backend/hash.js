@@ -1,6 +1,6 @@
 const bcrypt = require('bcrypt');
 
-const password = 'claveinformatica';
+const password = 'admin123';
 
 bcrypt.hash(password, 10, function(err, hash) {
   if (err) throw err;

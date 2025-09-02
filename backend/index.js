@@ -16,6 +16,7 @@ const multer = require('multer');
 const mammoth = require('mammoth');
 const pdfParse = require('pdf-parse');
 const database = require('./database/database');
+const brandingConfig = require('./config/branding');
 
 dotenv.config();
 
@@ -1355,6 +1356,17 @@ app.get('/api/embeddings/test', async (req, res) => {
   } catch (error) {
     logger.error('Embedding test failed', { error: error.message });
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint para obtener configuración de branding
+app.get('/api/branding', (req, res) => {
+  try {
+    const config = brandingConfig.getAll();
+    res.json(config);
+  } catch (error) {
+    console.error('Error obteniendo configuración de branding:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
 
