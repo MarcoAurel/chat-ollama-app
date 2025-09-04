@@ -77,7 +77,7 @@ function App() {
     }
   };
 
-  // Handle real streaming
+  // Handle real streaming with throttling optimization
   const handleRealStreaming = async (currentPrompt, sessionId) => {
     console.log('📡 handleRealStreaming called with:', { currentPrompt, sessionId });
     return new Promise((resolve, reject) => {
@@ -92,6 +92,12 @@ function App() {
       };
       setChatHistory(prev => [...prev, botMessage]);
       console.log('💬 Bot message created with ID:', botMessageId);
+
+      // Throttling variables for performance optimization
+      let streamBuffer = '';
+      let lastUpdate = 0;
+      const STREAM_UPDATE_INTERVAL = 150; // Update UI every 150ms instead of every chunk
+      let pendingUpdate = false;
 
       // Use fetch with streaming
       console.log('🌐 Making fetch request to /api/chat with stream: true');
@@ -118,9 +124,25 @@ function App() {
         let buffer = '';
         let fullResponse = '';
 
+        // Simplified throttled update function
+        const updateUI = (force = false) => {
+          const now = Date.now();
+          if (force || now - lastUpdate > STREAM_UPDATE_INTERVAL) {
+            setChatHistory(prev => 
+              prev.map(msg => 
+                msg.id === botMessageId 
+                  ? { ...msg, text: fullResponse } 
+                  : msg
+              )
+            );
+            lastUpdate = now;
+          }
+        };
+
         function readStream() {
           return reader.read().then(({ done, value }) => {
             if (done) {
+              // Final update with completed response
               setChatHistory(prev => 
                 prev.map(msg => 
                   msg.id === botMessageId 
@@ -128,6 +150,8 @@ function App() {
                     : msg
                 )
               );
+              setLoading(false);
+              setIsTyping(false);
               resolve(fullResponse);
               return;
             }
@@ -145,14 +169,10 @@ function App() {
                     setCurrentSessionId(data.sessionId);
                   } else if (data.type === 'chunk') {
                     fullResponse += data.content;
-                    setChatHistory(prev => 
-                      prev.map(msg => 
-                        msg.id === botMessageId 
-                          ? { ...msg, text: fullResponse } 
-                          : msg
-                      )
-                    );
+                    // Use throttled update instead of immediate update
+                    updateUI();
                   } else if (data.type === 'done') {
+                    console.log('🏁 Stream completed, cleaning up...', { fullResponse: fullResponse.length });
                     fullResponse = data.fullResponse || fullResponse;
                     setCurrentSessionId(data.sessionId);
                     setChatHistory(prev => 
@@ -162,6 +182,11 @@ function App() {
                           : msg
                       )
                     );
+                    // Force cleanup of all loading states
+                    setTimeout(() => {
+                      setLoading(false);
+                      setIsTyping(false);
+                    }, 100);
                     resolve(fullResponse);
                     return;
                   } else if (data.type === 'error') {
@@ -193,6 +218,8 @@ function App() {
               : msg
           )
         );
+        setLoading(false);
+        setIsTyping(false);
         reject(error);
       });
     });
@@ -273,10 +300,22 @@ function App() {
         
         showToast(`Archivos procesados: ${res.data.filesProcessed || currentFiles.length}`, "success");
       } else {
-        // Usar streaming real
+        // Usar streaming real con timeout de seguridad
         console.log('🚀 Starting real streaming...', { currentPrompt, sessionId });
-        await handleRealStreaming(currentPrompt, sessionId);
-        console.log('✅ Real streaming completed');
+        
+        // Timeout de seguridad de 2 minutos
+        const streamingTimeout = setTimeout(() => {
+          console.log('⏰ Streaming timeout, forcing cleanup');
+          setLoading(false);
+          setIsTyping(false);
+        }, 120000); // 2 minutos
+        
+        try {
+          await handleRealStreaming(currentPrompt, sessionId);
+          console.log('✅ Real streaming completed');
+        } finally {
+          clearTimeout(streamingTimeout);
+        }
       }
       
     } catch (err) {
@@ -302,8 +341,12 @@ function App() {
       
       showToast("Error enviando mensaje", "error");
     } finally {
-      setLoading(false);
-      setIsTyping(false);
+      // Ensure loading states are always cleaned up
+      console.log('🧹 Final cleanup in handleSendPrompt');
+      setTimeout(() => {
+        setLoading(false);
+        setIsTyping(false);
+      }, 200);
       inputRef.current?.focus();
     }
   };
@@ -731,12 +774,12 @@ function App() {
           <div className="max-w-4xl mx-auto flex justify-between items-center">
             <div className="flex items-center space-x-3">
               <div className="w-8 h-8 bg-white rounded-full flex items-center justify-center p-1">
-                <img src="/Logo_Luckia.svg" alt="Luckia" className="w-full h-full object-contain" />
+                <img src="/Logo_Luckia.svg" alt="Anyelita" className="w-full h-full object-contain" />
               </div>
               <h1 className="text-lg font-semibold text-white drop-shadow-lg">
                 {loggedIn ? 
-                  `${brandingConfig?.branding?.app?.name || 'Luckia Chat'} - ${agentConfig?.agent_name || brandingConfig?.branding?.app?.agent_name || 'Informática'}` : 
-                  `${brandingConfig?.branding?.app?.name || 'Luckia Chat'} - Login`
+                  `${brandingConfig?.branding?.app?.name || 'Anyelita'} - ${agentConfig?.agent_name || brandingConfig?.branding?.app?.agent_name || 'Informática'}` : 
+                  `${brandingConfig?.branding?.app?.name || 'Anyelita'} - Login`
                 }
               </h1>
             </div>
@@ -806,7 +849,7 @@ function App() {
             <div className="bg-white/95 dark:bg-gray-900/90 backdrop-blur-sm p-8 rounded-2xl shadow-xl w-full max-w-md border border-white/30 dark:border-gray-600/50 animate-in slide-in-from-bottom duration-500">
               <div className="text-center mb-8">
                 <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center mx-auto mb-4 p-2 shadow-lg">
-                  <img src="/Logo_Luckia.svg" alt="Luckia" className="w-full h-full object-contain" />
+                  <img src="/Logo_Luckia.svg" alt="Anyelita" className="w-full h-full object-contain" />
                 </div>
                 <h2 className="text-2xl font-bold text-gray-800 dark:text-gray-200">Acceso por Área</h2>
                 <p className="text-gray-600 dark:text-gray-400 mt-2">Ingresa tus credenciales para continuar</p>
@@ -838,7 +881,7 @@ function App() {
               </div>
             </div>
           ) : (
-            <div className="w-full max-w-4xl h-[calc(100vh-120px)] bg-white/95 dark:bg-gray-900/90 backdrop-blur-sm rounded-2xl shadow-xl border border-white/30 dark:border-gray-600/50 flex flex-col animate-in slide-in-from-bottom duration-500">
+            <div className={`w-full max-w-4xl h-[calc(100vh-120px)] bg-white/95 dark:bg-gray-900/90 backdrop-blur-sm rounded-2xl shadow-xl border border-white/30 dark:border-gray-600/50 flex flex-col animate-in slide-in-from-bottom duration-500 ${isTyping ? 'streaming-mode' : ''}`}>
               
               {/* Chat Header */}
               <div className="p-4 border-b border-gray-200/50 dark:border-gray-600/50 flex justify-between items-center">
@@ -862,9 +905,9 @@ function App() {
                 {chatHistory.length === 0 && (
                   <div className="text-center py-12">
                     <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center mx-auto mb-4 opacity-20 p-2">
-                      <img src="/Logo_Luckia.svg" alt="Luckia" className="w-full h-full object-contain" />
+                      <img src="/Logo_Luckia.svg" alt="Anyelita" className="w-full h-full object-contain" />
                     </div>
-                    <p className="text-gray-500 dark:text-gray-400">¡Bienvenido al Chat de Luckia! Tu asistente de informática está aquí para ayudarte. ¿En qué puedo asistirte hoy?</p>
+                    <p className="text-gray-500 dark:text-gray-400">¡Hola! Soy Anyelita, tu asistente de informática. Estoy aquí para ayudarte con cualquier problema técnico. ¿En qué puedo asistirte hoy?</p>
                   </div>
                 )}
                 
@@ -877,9 +920,9 @@ function App() {
                       {msg.sender === "bot" && (
                         <div className="flex items-center space-x-2 mb-1">
                           <div className="w-6 h-6 bg-white rounded-full flex items-center justify-center p-1">
-                            <img src="/Logo_Luckia.svg" alt="Luckia" className="w-full h-full object-contain" />
+                            <img src="/Logo_Luckia.svg" alt="Anyelita" className="w-full h-full object-contain" />
                           </div>
-                          <span className="text-xs text-gray-500 dark:text-gray-400">{brandingConfig?.branding?.app?.name || 'Luckia Chat'}</span>
+                          <span className="text-xs text-gray-500 dark:text-gray-400">{brandingConfig?.branding?.app?.name || 'Anyelita'}</span>
                         </div>
                       )}
                       <div className="relative">
@@ -909,10 +952,11 @@ function App() {
                                 <span>{msg.text}</span>
                               </div>
                             ) : (
-                              <MarkdownMessage content={msg.text} darkMode={darkMode} />
-                            )}
-                            {msg.isStreaming && (
-                              <span className="inline-block w-2 h-5 bg-gray-600 dark:bg-gray-300 ml-1 animate-pulse">|</span>
+                              <MarkdownMessage 
+                                content={msg.text} 
+                                darkMode={darkMode} 
+                                isStreaming={msg.isStreaming || false}
+                              />
                             )}
                           </div>
                         ) : (
@@ -929,11 +973,21 @@ function App() {
                         )}
                         
                         {msg.timestamp && (
-                          <span className={`text-xs block mt-2 ${
+                          <div className={`text-xs flex items-center justify-between mt-2 ${
                             msg.sender === "user" ? "text-white/70" : "text-gray-500 dark:text-gray-400"
                           }`}>
-                            {msg.timestamp}
-                          </span>
+                            <span>{msg.timestamp}</span>
+                            {msg.isStreaming && msg.sender === "bot" && (
+                              <div className="flex items-center space-x-2">
+                                <span className="text-xs">Escribiendo</span>
+                                <div className="flex space-x-1">
+                                  <div className="w-1 h-1 bg-current rounded-full animate-bounce"></div>
+                                  <div className="w-1 h-1 bg-current rounded-full animate-bounce" style={{animationDelay: '0.1s'}}></div>
+                                  <div className="w-1 h-1 bg-current rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
                         )}
                         </div>
                       </div>
@@ -941,25 +995,6 @@ function App() {
                   </div>
                 ))}
                 
-                {isTyping && (
-                  <div className="flex justify-start animate-in slide-in-from-bottom duration-300">
-                    <div className="max-w-[80%]">
-                      <div className="flex items-center space-x-2 mb-1">
-                        <div className="w-6 h-6 bg-white rounded-full flex items-center justify-center p-1">
-                          <img src="/Logo_Luckia.svg" alt="Luckia" className="w-full h-full object-contain" />
-                        </div>
-                        <span className="text-xs text-gray-500 dark:text-gray-400">Anyelita</span>
-                      </div>
-                      <div className="bg-gray-100/80 dark:bg-gray-700/80 px-4 py-3 rounded-2xl rounded-bl-md">
-                        <div className="flex space-x-1">
-                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
-                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.1s'}}></div>
-                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
               </div>
 
               {/* Chat Input */}

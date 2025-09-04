@@ -1,9 +1,9 @@
-import React, { memo } from 'react';
+import React, { memo, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus, vs } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
-const MarkdownMessage = ({ content, darkMode = false }) => {
+const MarkdownMessage = memo(({ content, darkMode = false, isStreaming = false }) => {
   const copyToClipboard = async (text) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -21,73 +21,96 @@ const MarkdownMessage = ({ content, darkMode = false }) => {
     }
   };
 
-  const CodeBlock = ({ node, inline, className, children, ...props }) => {
-    const match = /language-(\w+)/.exec(className || '');
-    const language = match ? match[1] : '';
-    const codeString = String(children).replace(/\n$/, '');
+  // Memoized CodeBlock component to avoid re-processing during streaming
+  const CodeBlock = useMemo(() => {
+    return ({ node, inline, className, children, ...props }) => {
+      const match = /language-(\w+)/.exec(className || '');
+      const language = match ? match[1] : '';
+      const codeString = String(children).replace(/\n$/, '');
 
-    if (!inline && match) {
+      if (!inline && match) {
+        return (
+          <div className="relative group my-4 overflow-hidden rounded-lg border border-gray-200 dark:border-gray-600 hljs">
+            {/* Copy button */}
+            <button
+              onClick={() => copyToClipboard(codeString)}
+              className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-gray-700 hover:bg-gray-600 text-white px-2 py-1 rounded text-xs font-medium z-10"
+              title="Copiar código"
+            >
+              📋 Copiar
+            </button>
+            
+            {/* Language label */}
+            {language && (
+              <div className="absolute top-2 left-2 bg-gray-600 text-white px-2 py-1 rounded text-xs font-medium opacity-75">
+                {language}
+              </div>
+            )}
+            
+            {/* Durante streaming, mostrar texto plano para mejor performance */}
+            {isStreaming ? (
+              <pre className="p-4 pt-10 bg-gray-800 text-green-400 font-mono text-sm whitespace-pre-wrap overflow-x-auto">
+                <code>{codeString}</code>
+              </pre>
+            ) : (
+              <SyntaxHighlighter
+                style={darkMode ? vscDarkPlus : vs}
+                language={language}
+                PreTag="div"
+                className="!mt-0 !mb-4 hljs"
+                showLineNumbers={codeString.split('\n').length > 5}
+                wrapLines={false}
+                wrapLongLines={false}
+                customStyle={{
+                  borderRadius: '8px',
+                  padding: '1rem',
+                  paddingTop: language ? '2.5rem' : '1rem',
+                  fontSize: '14px',
+                  lineHeight: '1.4',
+                  overflow: 'auto',
+                  overflowX: 'auto',
+                  maxWidth: '100%'
+                }}
+                {...props}
+              >
+                {codeString}
+              </SyntaxHighlighter>
+            )}
+          </div>
+        );
+      }
+
+      // Inline code
       return (
-        <div className="relative group my-4 overflow-hidden rounded-lg border border-gray-200 dark:border-gray-600">
-          {/* Copy button */}
-          <button
-            onClick={() => copyToClipboard(codeString)}
-            className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-gray-700 hover:bg-gray-600 text-white px-2 py-1 rounded text-xs font-medium z-10"
-            title="Copiar código"
-          >
-            📋 Copiar
-          </button>
-          
-          {/* Language label */}
-          {language && (
-            <div className="absolute top-2 left-2 bg-gray-600 text-white px-2 py-1 rounded text-xs font-medium opacity-75">
-              {language}
-            </div>
-          )}
-          
-          <SyntaxHighlighter
-            style={darkMode ? vscDarkPlus : vs}
-            language={language}
-            PreTag="div"
-            className="!mt-0 !mb-4"
-            showLineNumbers={codeString.split('\n').length > 5}
-            wrapLines={false}
-            wrapLongLines={false}
-            customStyle={{
-              borderRadius: '8px',
-              padding: '1rem',
-              paddingTop: language ? '2.5rem' : '1rem',
-              fontSize: '14px',
-              lineHeight: '1.4',
-              overflow: 'auto',
-              overflowX: 'auto',
-              maxWidth: '100%'
-            }}
-            {...props}
-          >
-            {codeString}
-          </SyntaxHighlighter>
-        </div>
+        <code
+          className="bg-gray-100 dark:bg-gray-700 px-1 py-0.5 rounded text-sm font-mono text-gray-800 dark:text-gray-200 break-all"
+          style={{
+            wordBreak: 'break-all',
+            overflowWrap: 'break-word'
+          }}
+          {...props}
+        >
+          {children}
+        </code>
       );
-    }
+    };
+  }, [darkMode, isStreaming]);
 
-    // Inline code
+  // Durante streaming, mostrar texto plano SIN cursor para mejor rendimiento GPU
+  if (isStreaming) {
     return (
-      <code
-        className="bg-gray-100 dark:bg-gray-700 px-1 py-0.5 rounded text-sm font-mono text-gray-800 dark:text-gray-200 break-all"
-        style={{
-          wordBreak: 'break-all',
-          overflowWrap: 'break-word'
-        }}
-        {...props}
-      >
-        {children}
-      </code>
+      <div className="streaming-message">
+        <div className="text-gray-700 dark:text-gray-300 leading-relaxed whitespace-pre-wrap">
+          {content}
+          <span className="inline-block w-2 h-5 bg-gray-600 dark:bg-gray-300 ml-1 opacity-60">▌</span>
+        </div>
+      </div>
     );
-  };
+  }
 
+  // Solo procesar markdown cuando el streaming haya terminado
   return (
-    <div className="markdown-content prose dark:prose-invert max-w-none overflow-hidden">
+    <div className="message-content markdown-content prose dark:prose-invert max-w-none overflow-hidden">
       <ReactMarkdown
         components={{
           code: CodeBlock,
@@ -176,6 +199,13 @@ const MarkdownMessage = ({ content, darkMode = false }) => {
       </ReactMarkdown>
     </div>
   );
-};
+}, (prevProps, nextProps) => {
+  // Comparación personalizada para evitar re-renders innecesarios
+  if (prevProps.isStreaming !== nextProps.isStreaming) return false;
+  if (prevProps.darkMode !== nextProps.darkMode) return false;
+  if (!prevProps.isStreaming && prevProps.content !== nextProps.content) return false;
+  if (prevProps.isStreaming && prevProps.content === nextProps.content) return true;
+  return false;
+});
 
 export default memo(MarkdownMessage);

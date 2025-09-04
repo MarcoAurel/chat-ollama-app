@@ -1181,7 +1181,7 @@ app.get('/api/history/export/:sessionId', async (req, res) => {
       
       history.forEach((msg, index) => {
         content += `[${new Date(msg.timestamp).toLocaleString()}] Usuario:\n${msg.user_message}\n\n`;
-        content += `[${new Date(msg.timestamp).toLocaleString()}] Luckia Chat:\n${msg.bot_response}\n\n`;
+        content += `[${new Date(msg.timestamp).toLocaleString()}] Anyelita:\n${msg.bot_response}\n\n`;
         content += '-'.repeat(30) + '\n\n';
       });
       

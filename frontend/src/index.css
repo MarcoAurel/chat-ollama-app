@@ -64,3 +64,61 @@ textarea {
 .active\:scale-\[0\.98\]:active {
   transform: scale(0.98);
 }
+
+/* GPU Performance Optimizations */
+.message-content {
+  contain: layout style paint;
+  will-change: auto;
+}
+
+.streaming-message {
+  contain: layout;
+  will-change: contents;
+}
+
+/* Optimized cursor animation for streaming - simplified for less GPU usage */
+.cursor-blink {
+  animation: blink 1.5s step-end infinite;
+  will-change: opacity;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* Disable all animations during heavy streaming to save GPU */
+.streaming-mode .animate-bounce,
+.streaming-mode .animate-spin,
+.streaming-mode .animate-pulse {
+  animation: none !important;
+}
+
+.streaming-mode .transition-all,
+.streaming-mode .transition-colors,
+.streaming-mode .transition-opacity {
+  transition: none !important;
+}
+
+/* Reduce GPU acceleration for syntax highlighting */
+.hljs {
+  contain: layout style;
+}
+
+/* Optimize animations to use only necessary properties */
+.animate-bounce {
+  will-change: transform;
+}
+
+.animate-spin {
+  will-change: transform;
+}
+
+.animate-pulse {
+  will-change: opacity;
+}
+
+/* Remove unnecessary GPU acceleration */
+.message {
+  will-change: auto;
+}

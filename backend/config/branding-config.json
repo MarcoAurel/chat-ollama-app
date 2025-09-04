@@ -5,8 +5,8 @@
       "logo": "/Logo_Luckia.svg"
     },
     "app": {
-      "name": "Luckia Chat",
-      "agent_name": "Asistente Luckia",
+      "name": "Anyelita",
+      "agent_name": "Asistente Virtual",
       "description": "Sistema de chat inteligente con IA"
     },
     "theme": {
