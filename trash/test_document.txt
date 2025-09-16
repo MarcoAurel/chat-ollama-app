@@ -1,0 +1,16 @@
+Documento de prueba para Anyelita - Sistema RAG
+
+Este es un documento de prueba que contiene información importante:
+
+1. El sistema funciona correctamente
+2. OCR integrado con servidor remoto
+3. Soporte multi-formato implementado
+4. Panel de administración operativo
+
+Información técnica:
+- Frontend: React + Vite
+- Backend: Node.js + Express
+- OCR: Servicio remoto en 172.19.5.212:3002
+- Embeddings: all-MiniLM-L6-v2
+
+Fecha de creación: 2025-09-04

@@ -15,10 +15,129 @@ const SQLiteStore = require('connect-sqlite3')(session);
 const multer = require('multer');
 const mammoth = require('mammoth');
 const pdfParse = require('pdf-parse');
-const database = require('./database/database');
-const brandingConfig = require('./config/branding');
+const jwt = require('jsonwebtoken');
+const { v4: uuidv4 } = require('uuid');
+
+// NUEVO: Servicio de inicialización progresiva
+const initService = require('./services/initialization');
 
 dotenv.config();
+
+// ===== MANEJO GLOBAL DE ERRORES =====
+process.on('uncaughtException', (err) => {
+  console.error('❌ UNCAUGHT EXCEPTION:', err.message);
+  console.error(err.stack);
+  // No exit, just log the error
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ UNHANDLED REJECTION:', reason);
+  console.error('At promise:', promise);
+  // No exit, just log the error
+});
+
+// ===== ENHANCED PROCESS MONITORING =====
+process.on('beforeExit', (code) => {
+  console.log('🔍 Process beforeExit event with code:', code);
+  console.log('🔍 Process still alive, checking event loop...');
+});
+
+process.on('exit', (code) => {
+  console.log('🔍 Process exit event with code:', code);
+});
+
+// Process monitoring and heartbeat detection
+let serverStartTime = Date.now();
+let heartbeatInterval;
+
+function startProcessMonitoring() {
+  heartbeatInterval = setInterval(() => {
+    const memUsage = process.memoryUsage();
+    const uptime = Date.now() - serverStartTime;
+    
+    console.log('💓 Server heartbeat:', {
+      timestamp: new Date().toISOString(),
+      uptime: `${Math.floor(uptime / 1000)}s`,
+      memory: {
+        rss: `${Math.round(memUsage.rss / 1024 / 1024)}MB`,
+        heapTotal: `${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`,
+        heapUsed: `${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`,
+        external: `${Math.round(memUsage.external / 1024 / 1024)}MB`
+      },
+      eventLoopDelay: process.hrtime.bigint ? 'available' : 'not available'
+    });
+    
+    // Memory leak detection
+    if (memUsage.heapUsed > 200 * 1024 * 1024) { // 200MB threshold
+      console.warn('⚠️ High memory usage detected:', Math.round(memUsage.heapUsed / 1024 / 1024), 'MB');
+    }
+    
+  }, 10000); // Every 10 seconds
+}
+
+// Enhanced error detection
+process.on('warning', (warning) => {
+  console.warn('⚠️ Node.js Warning:', warning.name, warning.message);
+  if (warning.stack) console.warn(warning.stack);
+});
+
+// ===== CIRCUIT BREAKER FOR OLLAMA REQUESTS =====
+class CircuitBreaker {
+  constructor(threshold = 3, timeout = 30000, resetTime = 60000) {
+    this.threshold = threshold;
+    this.timeout = timeout;
+    this.resetTime = resetTime;
+    this.failureCount = 0;
+    this.lastFailureTime = null;
+    this.state = 'CLOSED'; // CLOSED, OPEN, HALF_OPEN
+  }
+  
+  async execute(fn) {
+    if (this.state === 'OPEN') {
+      if (Date.now() - this.lastFailureTime > this.resetTime) {
+        this.state = 'HALF_OPEN';
+        console.log('🔧 Circuit breaker: Half-open state, trying again...');
+      } else {
+        throw new Error('Circuit breaker is OPEN - Ollama service temporarily unavailable');
+      }
+    }
+    
+    try {
+      const result = await Promise.race([
+        fn(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Operation timeout')), this.timeout)
+        )
+      ]);
+      
+      this.onSuccess();
+      return result;
+    } catch (error) {
+      this.onFailure();
+      throw error;
+    }
+  }
+  
+  onSuccess() {
+    this.failureCount = 0;
+    this.state = 'CLOSED';
+    console.log('✅ Circuit breaker: Success, state reset to CLOSED');
+  }
+  
+  onFailure() {
+    this.failureCount++;
+    this.lastFailureTime = Date.now();
+    
+    if (this.failureCount >= this.threshold) {
+      this.state = 'OPEN';
+      console.error(`❌ Circuit breaker: OPENED after ${this.failureCount} failures`);
+    }
+    
+    console.error(`⚠️ Circuit breaker: Failure ${this.failureCount}/${this.threshold}, state: ${this.state}`);
+  }
+}
+
+const ollamaCircuitBreaker = new CircuitBreaker(3, 30000, 60000);
 
 // Configurar logger
 const logger = winston.createLogger({
@@ -44,6 +163,13 @@ const app = express();
 const port = 3001;
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL;
 const AREA_CONFIG_PATH = process.env.AREA_CONFIG_PATH;
+const JWT_SECRET = process.env.SESSION_SECRET || 'luckia-chat-super-secret-key-change-in-production-2025';
+
+// Variables globales para servicios (se inicializan de manera asíncrona)
+let areas = {};
+let database = null;
+let qdrantService = null;
+let embeddingService = null;
 
 // Rate limiting - MUY generoso para no afectar UX
 const limiter = rateLimit({
@@ -205,42 +331,45 @@ const handleValidationErrors = (req, res, next) => {
   next();
 };
 
-let areas = {};
-
-// Initialize database first
+// ===== FUNCIÓN DE INICIALIZACIÓN ASÍNCRONA =====
 async function initializeApp() {
   try {
-    // Initialize database
-    await database.initialize(logger);
-    logger.info('Database initialized successfully');
+    logger.info('🚀 Starting Luckia Chat Server...');
     
-    // Load areas configuration
-    const configPath = path.resolve(AREA_CONFIG_PATH);
-    const data = fs.readFileSync(configPath, 'utf-8');
-    areas = JSON.parse(data);
+    // Inicializar servicios críticos (sincronos, requeridos para funcionar)
+    const criticalServices = await initService.initializeAll();
     
-    // Initialize Qdrant
-    const qdrant = require('./config/qdrant');
-    await qdrant.initialize();
+    // Asignar servicios críticos
+    database = criticalServices.database;
+    areas = criticalServices.areas;
     
-    // Initialize Embedding Service
-    const embeddingService = require('./services/embeddings');
-    await embeddingService.initialize();
-    logger.info('Configuration loaded successfully', { 
-      areasCount: Object.keys(areas).length,
-      areas: Object.keys(areas) 
-    });
+    logger.info('✅ Critical services ready - server starting');
+    
+    // Los servicios opcionales (Qdrant, Embeddings) se inicializan en background
+    // El servidor puede funcionar sin ellos
     
     return true;
   } catch (err) {
-    logger.error('Failed to initialize application', { error: err.message, stack: err.stack });
+    logger.error('❌ Failed to initialize critical services', { error: err.message, stack: err.stack });
     console.error('❌ Error inicializando aplicación:', err);
     process.exit(1);
   }
 }
 
-// Initialize app before starting server
-initializeApp();
+// Función helper para obtener servicios opcionales
+function getOptionalService(serviceName) {
+  const service = initService.getService(serviceName);
+  const isInitialized = initService.isInitialized(serviceName);
+  
+  if (!isInitialized) {
+    logger.warn(`⚠️ Service ${serviceName} not yet initialized`);
+    return null;
+  }
+  
+  return service;
+}
+
+// ===== ENDPOINTS =====
 
 app.post('/api/login', loginLimiter, validateLogin, handleValidationErrors, async (req, res) => {
   const { area, password } = req.body;
@@ -265,237 +394,27 @@ app.post('/api/login', loginLimiter, validateLogin, handleValidationErrors, asyn
   req.session.area = area;
   req.session.agent_config = areaData.agent_config;
   
+  // Generate JWT token for admin operations
+  const token = jwt.sign(
+    { 
+      area: area, 
+      username: area, // Using area as username for now
+      iat: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + (24 * 60 * 60) // 24 hours
+    }, 
+    JWT_SECRET
+  );
+  
   // Don't create session automatically - wait for first message
   return res.json({ 
     message: 'Acceso concedido', 
-    agent_config: areaData.agent_config
+    agent_config: areaData.agent_config,
+    token: token,
+    username: area
   });
 });
 
-// Chat con archivos adjuntos
-app.post('/api/chat-with-files', upload.array('files', 5), async (req, res) => {
-  const { area, prompt, sessionId } = req.body;
-  
-  logger.info('Chat with files request', { 
-    area, 
-    promptLength: prompt?.length, 
-    sessionId,
-    fileCount: req.files?.length || 0,
-    ip: req.ip 
-  });
-  
-  const areaData = areas[area];
-  if (!areaData) {
-    logger.warn('Chat with files failed - invalid area', { area, ip: req.ip });
-    return res.status(401).json({ message: 'Área inválida' });
-  }
-
-  const config = areaData.agent_config;
-  let currentSessionId = sessionId || req.session.currentChatSession;
-  
-  try {
-    // Procesar archivos adjuntos
-    let contextFromFiles = '';
-    
-    if (req.files && req.files.length > 0) {
-      logger.info('Processing attached files', { fileCount: req.files.length });
-      
-      const fileContents = [];
-      for (const file of req.files) {
-        try {
-          let content = '';
-          
-          if (file.mimetype.startsWith('image/')) {
-            // Para imágenes, agregar descripción básica
-            content = `[IMAGEN: ${file.originalname} - ${file.mimetype} - ${Math.round(file.size/1024)}KB]\n(Nota: Esta es una imagen que no puede ser procesada directamente por el modelo de texto)`;
-          } else if (file.mimetype === 'application/pdf') {
-            // Procesar PDF con pdf-parse
-            try {
-              const pdfData = await pdfParse(file.buffer);
-              content = pdfData.text.trim();
-              if (!content) {
-                content = '[PDF sin contenido de texto extraíble o PDF con imágenes/escaneos]';
-              }
-            } catch (pdfError) {
-              logger.error('Error parsing PDF', { filename: file.originalname, error: pdfError.message });
-              content = `[Error procesando PDF: ${file.originalname}]`;
-            }
-          } else if (file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
-            // Procesar DOCX con mammoth
-            try {
-              const docxData = await mammoth.extractRawText({ buffer: file.buffer });
-              content = docxData.value.trim();
-              if (!content) {
-                content = '[Documento DOCX sin contenido de texto extraíble]';
-              }
-            } catch (docxError) {
-              logger.error('Error parsing DOCX', { filename: file.originalname, error: docxError.message });
-              content = `[Error procesando DOCX: ${file.originalname}]`;
-            }
-          } else if (file.mimetype === 'application/msword') {
-            // Para DOC legacy, solo indicamos que no se puede procesar
-            content = `[DOCUMENTO DOC: ${file.originalname} - Formato DOC legacy no soportado. Convierte a DOCX para procesamiento completo]`;
-          } else {
-            // Para archivos de texto
-            try {
-              content = file.buffer.toString('utf8');
-              if (!content.trim()) {
-                content = '[Archivo vacío o sin contenido de texto]';
-              }
-            } catch (textError) {
-              content = `[Error leyendo archivo de texto: ${file.originalname}]`;
-            }
-          }
-          
-          fileContents.push({
-            name: file.originalname,
-            type: file.mimetype,
-            size: file.size,
-            content: content
-          });
-          
-          logger.info('File processed successfully', { 
-            filename: file.originalname, 
-            contentLength: content.length,
-            type: file.mimetype
-          });
-          
-        } catch (fileError) {
-          logger.error('Error processing file', { 
-            filename: file.originalname, 
-            error: fileError.message 
-          });
-          
-          // Agregar archivo con error para que el usuario sepa que falló
-          fileContents.push({
-            name: file.originalname,
-            type: file.mimetype,
-            size: file.size,
-            content: `[Error procesando archivo: ${file.originalname} - ${fileError.message}]`
-          });
-        }
-      }
-      
-      // Construir contexto para el prompt
-      if (fileContents.length > 0) {
-        contextFromFiles = '\n\n=== DOCUMENTOS ADJUNTOS ===\n';
-        fileContents.forEach((file, index) => {
-          contextFromFiles += `\n📄 DOCUMENTO ${index + 1}: ${file.name}\n`;
-          contextFromFiles += `📝 Tipo: ${file.type}\n`;
-          contextFromFiles += `💾 Tamaño: ${Math.round(file.size/1024)}KB\n\n`;
-          contextFromFiles += `CONTENIDO:\n${file.content}\n`;
-          contextFromFiles += '\n' + '='.repeat(50) + '\n';
-        });
-        contextFromFiles += '\n✨ INSTRUCCIÓN: Analiza el contenido de estos documentos y responde la pregunta basándote en la información proporcionada. Si no encuentras información relevante en los documentos, indícalo claramente.\n';
-      }
-    }
-    
-    // Combinar prompt original con contexto de archivos
-    const enhancedPrompt = prompt + contextFromFiles;
-    
-    // Verificar que el prompt no sea demasiado largo (límite de ~8000 tokens aprox)
-    const maxPromptLength = 25000; // caracteres aproximados
-    let finalPrompt = enhancedPrompt;
-    
-    if (enhancedPrompt.length > maxPromptLength) {
-      logger.warn('Prompt too long, truncating context', { 
-        originalLength: enhancedPrompt.length,
-        maxLength: maxPromptLength
-      });
-      
-      // Truncar el contexto pero mantener el prompt original
-      const truncatedContext = contextFromFiles.substring(0, maxPromptLength - prompt.length - 1000) + '\n[... contenido truncado ...]';
-      finalPrompt = prompt + truncatedContext;
-    }
-    
-    // Construir la request correcta para Ollama
-    const ollamaRequest = {
-      model: config.model,
-      prompt: finalPrompt,
-      system: config.system_prompt,
-      stream: false,
-      options: {
-        temperature: 0.7,
-        top_p: 0.9,
-        top_k: 40
-      }
-    };
-    
-    logger.info('Sending request to Ollama', {
-      model: config.model,
-      promptLength: finalPrompt.length,
-      hasSystemPrompt: !!config.system_prompt
-    });
-    
-    const response = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, ollamaRequest, { 
-      timeout: 180000, // 3 minutos para archivos grandes
-      headers: {
-        'Content-Type': 'application/json'
-      }
-    });
-    
-    // Guardar en base de datos si hay sesión activa
-    if (currentSessionId) {
-      try {
-        await database.saveConversation(
-          currentSessionId, 
-          area, 
-          prompt + (req.files?.length > 0 ? ` [+${req.files.length} archivo(s)]` : ''), 
-          response.data.response
-        );
-      } catch (dbError) {
-        logger.error('Error saving chat with files to database', { 
-          error: dbError.message, 
-          sessionId: currentSessionId 
-        });
-      }
-    }
-    
-    logger.info('Chat with files completed successfully', { 
-      area, 
-      sessionId: currentSessionId,
-      fileCount: req.files?.length || 0,
-      responseLength: response.data.response?.length 
-    });
-    
-    res.json({ 
-      response: response.data.response,
-      sessionId: currentSessionId,
-      filesProcessed: req.files?.length || 0
-    });
-    
-  } catch (error) {
-    logger.error('Chat with files error', { 
-      error: error.message, 
-      area, 
-      sessionId: currentSessionId,
-      fileCount: req.files?.length || 0
-    });
-    
-    if (error.code === 'ECONNREFUSED') {
-      res.status(503).json({ 
-        message: 'Modelo de IA no disponible. Intenta más tarde.' 
-      });
-    } else if (error.code === 'LIMIT_FILE_SIZE') {
-      res.status(413).json({ 
-        message: 'Archivo demasiado grande. Máximo: 10MB por archivo.' 
-      });
-    } else if (error.code === 'LIMIT_FILE_COUNT') {
-      res.status(413).json({ 
-        message: 'Demasiados archivos. Máximo: 5 archivos.' 
-      });
-    } else if (error.code === 'ECONNABORTED') {
-      res.status(408).json({ 
-        message: 'Timeout en la consulta. Intenta con archivos más pequeños.' 
-      });
-    } else {
-      res.status(500).json({ 
-        message: 'Error interno del servidor' 
-      });
-    }
-  }
-});
-
+// Chat endpoint con manejo de servicios opcionales
 app.post('/api/chat', validateChat, handleValidationErrors, async (req, res) => {
   const { area, prompt, sessionId, stream = false } = req.body;
   
@@ -518,8 +437,8 @@ app.post('/api/chat', validateChat, handleValidationErrors, async (req, res) => 
   // Use sessionId from request or session
   let currentSessionId = sessionId || req.session.currentChatSession;
   
-  // Create new session if none exists
-  if (!currentSessionId) {
+  // Create new session if none exists (only if database is available)
+  if (!currentSessionId && database) {
     try {
       currentSessionId = await database.createSession(area);
       req.session.currentChatSession = currentSessionId;
@@ -546,28 +465,32 @@ app.post('/api/chat', validateChat, handleValidationErrors, async (req, res) => 
       // Send session ID immediately
       res.write(`data: ${JSON.stringify({ type: 'session', sessionId: currentSessionId })}\n\n`);
       
-      // 🧠 RAG: Search for relevant documents
+      // 🧠 RAG: Search for relevant documents (optional)
       let ragContext = '';
       try {
-        const qdrant = require('./config/qdrant');
-        const searchResults = await qdrant.searchDocuments(prompt, area, 3);
-        
-        if (searchResults && searchResults.length > 0) {
-          logger.info('📚 RAG: Found relevant documents', { 
-            count: searchResults.length, 
-            query: prompt.substring(0, 100) + '...' 
-          });
+        const qdrant = getOptionalService('qdrant');
+        if (qdrant) {
+          const searchResults = await qdrant.searchDocuments(prompt, area, 3);
           
-          ragContext = '\n🔍 CONTEXTO RELEVANTE DE DOCUMENTOS:\n';
-          ragContext += '='.repeat(50) + '\n';
-          
-          searchResults.forEach((doc, index) => {
-            ragContext += `📄 DOCUMENTO ${index + 1} (relevancia: ${(doc.score * 100).toFixed(1)}%):\n`;
-            ragContext += `${doc.content.substring(0, 800)}${doc.content.length > 800 ? '...' : ''}\n\n`;
-          });
-          
-          ragContext += '='.repeat(50) + '\n';
-          ragContext += '✨ INSTRUCCIÓN: Responde basándote principalmente en el contexto proporcionado. Si la información no está disponible en el contexto, indícalo claramente.\n\n';
+          if (searchResults && searchResults.length > 0) {
+            logger.info('📚 RAG: Found relevant documents', { 
+              count: searchResults.length, 
+              query: prompt.substring(0, 100) + '...' 
+            });
+            
+            ragContext = '\n📄 CONTEXTO RELEVANTE DE DOCUMENTOS:\n';
+            ragContext += '='.repeat(50) + '\n';
+            
+            searchResults.forEach((doc, index) => {
+              ragContext += `📄 DOCUMENTO ${index + 1} (relevancia: ${(doc.score * 100).toFixed(1)}%):\n`;
+              ragContext += `${doc.content.substring(0, 800)}${doc.content.length > 800 ? '...' : ''}\n\n`;
+            });
+            
+            ragContext += '='.repeat(50) + '\n';
+            ragContext += '✨ INSTRUCCIÓN: Responde basándote principalmente en el contexto proporcionado. Si la información no está disponible en el contexto, indícalo claramente.\n\n';
+          }
+        } else {
+          logger.info('📚 RAG: Qdrant not available, continuing without context search');
         }
       } catch (ragError) {
         logger.error('RAG search failed', { error: ragError.message });
@@ -577,21 +500,24 @@ app.post('/api/chat', validateChat, handleValidationErrors, async (req, res) => 
       // Combine original prompt with RAG context
       const enhancedPrompt = prompt + ragContext;
       
-      const response = await axios({
-        method: 'POST',
-        url: `${OLLAMA_BASE_URL}/api/generate`,
-        data: {
-          model: config.model,
-          prompt: enhancedPrompt,
-          system: config.system_prompt,
-          options: {
-            temperature: config.temperature,
-            num_predict: config.max_tokens
+      const response = await ollamaCircuitBreaker.execute(async () => {
+        console.log('🤖 Making Ollama request with circuit breaker protection');
+        return axios({
+          method: 'POST',
+          url: `${OLLAMA_BASE_URL}/api/generate`,
+          data: {
+            model: config.model,
+            prompt: enhancedPrompt,
+            system: config.system_prompt,
+            options: {
+              temperature: config.temperature,
+              num_predict: config.max_tokens
+            },
+            stream: true
           },
-          stream: true
-        },
-        responseType: 'stream',
-        timeout: 120000
+          responseType: 'stream',
+          timeout: 30000 // Reduced from 120s to 30s for better failure detection
+        });
       });
 
       response.data.on('data', async (chunk) => {
@@ -621,8 +547,8 @@ app.post('/api/chat', validateChat, handleValidationErrors, async (req, res) => 
                   ip: req.ip 
                 });
 
-                // Save to database
-                if (currentSessionId && fullResponse) {
+                // Save to database (only if available)
+                if (currentSessionId && fullResponse && database) {
                   try {
                     await database.saveMessage(currentSessionId, area, prompt, fullResponse);
                     logger.info('Streamed message saved to database', { sessionId: currentSessionId });
@@ -671,25 +597,27 @@ app.post('/api/chat', validateChat, handleValidationErrors, async (req, res) => 
     // 🧠 RAG: Search for relevant documents (non-streaming)
     let ragContext = '';
     try {
-      const qdrant = require('./config/qdrant');
-      const searchResults = await qdrant.searchDocuments(prompt, area, 3);
-      
-      if (searchResults && searchResults.length > 0) {
-        logger.info('📚 RAG: Found relevant documents (non-streaming)', { 
-          count: searchResults.length, 
-          query: prompt.substring(0, 100) + '...' 
-        });
+      const qdrant = getOptionalService('qdrant');
+      if (qdrant) {
+        const searchResults = await qdrant.searchDocuments(prompt, area, 3);
         
-        ragContext = '\n🔍 CONTEXTO RELEVANTE DE DOCUMENTOS:\n';
-        ragContext += '='.repeat(50) + '\n';
-        
-        searchResults.forEach((doc, index) => {
-          ragContext += `📄 DOCUMENTO ${index + 1} (relevancia: ${(doc.score * 100).toFixed(1)}%):\n`;
-          ragContext += `${doc.content.substring(0, 800)}${doc.content.length > 800 ? '...' : ''}\n\n`;
-        });
-        
-        ragContext += '='.repeat(50) + '\n';
-        ragContext += '✨ INSTRUCCIÓN: Responde basándote principalmente en el contexto proporcionado. Si la información no está disponible en el contexto, indícalo claramente.\n\n';
+        if (searchResults && searchResults.length > 0) {
+          logger.info('📚 RAG: Found relevant documents (non-streaming)', { 
+            count: searchResults.length, 
+            query: prompt.substring(0, 100) + '...' 
+          });
+          
+          ragContext = '\n📄 CONTEXTO RELEVANTE DE DOCUMENTOS:\n';
+          ragContext += '='.repeat(50) + '\n';
+          
+          searchResults.forEach((doc, index) => {
+            ragContext += `📄 DOCUMENTO ${index + 1} (relevancia: ${(doc.score * 100).toFixed(1)}%):\n`;
+            ragContext += `${doc.content.substring(0, 800)}${doc.content.length > 800 ? '...' : ''}\n\n`;
+          });
+          
+          ragContext += '='.repeat(50) + '\n';
+          ragContext += '✨ INSTRUCCIÓN: Responde basándote principalmente en el contexto proporcionado. Si la información no está disponible en el contexto, indícalo claramente.\n\n';
+        }
       }
     } catch (ragError) {
       logger.error('RAG search failed (non-streaming)', { error: ragError.message });
@@ -699,20 +627,23 @@ app.post('/api/chat', validateChat, handleValidationErrors, async (req, res) => 
     // Combine original prompt with RAG context
     const enhancedPrompt = prompt + ragContext;
     
-    const ollamaRes = await axios.post(
-      `${OLLAMA_BASE_URL}/api/generate`,
-      {
-        model: config.model,
-        prompt: enhancedPrompt,
-        system: config.system_prompt,
-        options: {
-          temperature: config.temperature,
-          num_predict: config.max_tokens
+    const ollamaRes = await ollamaCircuitBreaker.execute(async () => {
+      console.log('🤖 Making non-streaming Ollama request with circuit breaker protection');
+      return axios.post(
+        `${OLLAMA_BASE_URL}/api/generate`,
+        {
+          model: config.model,
+          prompt: enhancedPrompt,
+          system: config.system_prompt,
+          options: {
+            temperature: config.temperature,
+            num_predict: config.max_tokens
+          },
+          stream: false
         },
-        stream: false
-      },
-      { timeout: 120000 }
-    );
+        { timeout: 30000 } // Reduced from 120s to 30s for better failure detection
+      );
+    });
 
     const responseTime = Date.now() - startTime;
     const botResponse = ollamaRes.data.response;
@@ -726,8 +657,8 @@ app.post('/api/chat', validateChat, handleValidationErrors, async (req, res) => 
       ip: req.ip 
     });
 
-    // Save conversation to database
-    if (currentSessionId) {
+    // Save conversation to database (only if available)
+    if (currentSessionId && database) {
       try {
         await database.saveMessage(currentSessionId, area, prompt, botResponse);
         logger.info('Message saved to database', { sessionId: currentSessionId });
@@ -767,196 +698,6 @@ app.post('/api/chat', validateChat, handleValidationErrors, async (req, res) => 
   }
 });
 
-// Streaming chat endpoint using Server-Sent Events (SSE)
-app.post('/api/chat-stream', validateChat, handleValidationErrors, async (req, res) => {
-  const { area, prompt, sessionId } = req.body;
-  
-  logger.info('Chat stream request', { area, promptLength: prompt?.length, sessionId, ip: req.ip });
-  
-  const areaData = areas[area];
-  if (!areaData) {
-    logger.warn('Chat stream failed - invalid area', { area, ip: req.ip });
-    return res.status(401).json({ message: 'Área inválida' });
-  }
-
-  const config = areaData.agent_config;
-  
-  // Use sessionId from request or session
-  let currentSessionId = sessionId || req.session.currentChatSession;
-  
-  // Create new session if none exists
-  if (!currentSessionId) {
-    try {
-      currentSessionId = await database.createSession(area);
-      req.session.currentChatSession = currentSessionId;
-    } catch (err) {
-      logger.error('Failed to create chat session', { area, error: err.message });
-      // Continue without session - don't break chat
-    }
-  }
-
-  // Set headers for Server-Sent Events
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Cache-Control');
-
-  const startTime = Date.now();
-  let fullResponse = '';
-
-  try {
-    // Send session ID immediately
-    res.write(`data: ${JSON.stringify({ type: 'session', sessionId: currentSessionId })}\n\n`);
-    
-    // 🧠 RAG: Search for relevant documents
-    let ragContext = '';
-    try {
-      const qdrant = require('./config/qdrant');
-      const searchResults = await qdrant.searchDocuments(prompt, area, 3);
-      
-      if (searchResults && searchResults.length > 0) {
-        logger.info('📚 RAG: Found relevant documents', { 
-          count: searchResults.length, 
-          query: prompt.substring(0, 100) + '...' 
-        });
-        
-        ragContext = '\n🔍 CONTEXTO RELEVANTE DE DOCUMENTOS:\n';
-        ragContext += '='.repeat(50) + '\n';
-        
-        searchResults.forEach((doc, index) => {
-          ragContext += `📄 DOCUMENTO ${index + 1} (relevancia: ${(doc.score * 100).toFixed(1)}%):\n`;
-          ragContext += `${doc.content.substring(0, 800)}${doc.content.length > 800 ? '...' : ''}\n\n`;
-        });
-        
-        ragContext += '='.repeat(50) + '\n';
-        ragContext += '✨ INSTRUCCIÓN: Responde basándote principalmente en el contexto proporcionado. Si la información no está disponible en el contexto, indícalo claramente.\n\n';
-      }
-    } catch (ragError) {
-      logger.error('RAG search failed', { error: ragError.message });
-      // Continue without RAG if search fails
-    }
-    
-    // Combine original prompt with RAG context
-    const enhancedPrompt = prompt + ragContext;
-    
-    const response = await axios({
-      method: 'POST',
-      url: `${OLLAMA_BASE_URL}/api/generate`,
-      data: {
-        model: config.model,
-        prompt: enhancedPrompt,
-        system: config.system_prompt,
-        options: {
-          temperature: config.temperature,
-          num_predict: config.max_tokens
-        },
-        stream: true
-      },
-      responseType: 'stream',
-      timeout: 120000
-    });
-
-    response.data.on('data', async (chunk) => {
-      const lines = chunk.toString().split('\n');
-      
-      for (const line of lines) {
-        if (line.trim()) {
-          try {
-            const data = JSON.parse(line);
-            if (data.response) {
-              fullResponse += data.response;
-              // Send the streaming chunk to frontend
-              res.write(`data: ${JSON.stringify({ 
-                type: 'chunk', 
-                content: data.response 
-              })}\n\n`);
-            }
-            
-            if (data.done) {
-              const responseTime = Date.now() - startTime;
-              
-              logger.info('Chat stream successful', { 
-                area, 
-                promptLength: prompt?.length, 
-                responseLength: fullResponse?.length,
-                responseTime: `${responseTime}ms`,
-                sessionId: currentSessionId,
-                ip: req.ip 
-              });
-
-              // Save conversation to database
-              if (currentSessionId && fullResponse) {
-                try {
-                  await database.saveMessage(currentSessionId, area, prompt, fullResponse);
-                  logger.info('Streamed message saved to database', { sessionId: currentSessionId });
-                } catch (dbErr) {
-                  logger.error('Failed to save streamed message', { 
-                    sessionId: currentSessionId, 
-                    error: dbErr.message 
-                  });
-                }
-              }
-              
-              // Send completion signal
-              res.write(`data: ${JSON.stringify({ 
-                type: 'done', 
-                sessionId: currentSessionId,
-                fullResponse
-              })}\n\n`);
-              res.end();
-            }
-          } catch (parseErr) {
-            // Skip invalid JSON chunks
-            continue;
-          }
-        }
-      }
-    });
-
-    response.data.on('error', (error) => {
-      logger.error('Stream error', { error: error.message, area, ip: req.ip });
-      res.write(`data: ${JSON.stringify({ 
-        type: 'error', 
-        message: 'Error en el streaming' 
-      })}\n\n`);
-      res.end();
-    });
-
-  } catch (err) {
-    logger.error('Chat stream error', { 
-      area, 
-      error: err.message, 
-      stack: err.stack,
-      ip: req.ip 
-    });
-    
-    const errorMessage = err.code === 'ECONNREFUSED' 
-      ? 'El servicio de IA no está disponible temporalmente'
-      : err.code === 'ENOTFOUND' 
-      ? 'No se puede conectar al servicio de IA'
-      : err.code === 'ETIMEDOUT' || err.message.includes('timeout')
-      ? 'Timeout en la consulta. El modelo está procesando tu solicitud.'
-      : 'Error interno del servidor';
-
-    res.write(`data: ${JSON.stringify({ 
-      type: 'error', 
-      message: errorMessage 
-    })}\n\n`);
-    res.end();
-  }
-
-  // Handle client disconnect
-  req.on('close', () => {
-    logger.info('Client disconnected from stream', { area, sessionId: currentSessionId });
-  });
-});
-
-// Test streaming endpoint
-app.post('/api/test-stream', (req, res) => {
-  res.json({ message: 'Streaming test endpoint works!' });
-});
-
 // Logout endpoint
 app.post('/api/logout', async (req, res) => {
   try {
@@ -976,230 +717,48 @@ app.post('/api/logout', async (req, res) => {
   }
 });
 
-// === HISTORY ENDPOINTS ===
-
-// Get chat sessions for current area
-app.get('/api/history/sessions', async (req, res) => {
-  try {
-    const area = req.session.area;
-    if (!area) {
-      return res.status(401).json({ message: 'No hay sesión activa' });
-    }
-    
-    const sessions = await database.getAreaSessions(area, 50);
-    logger.info('Sessions retrieved', { area, count: sessions.length, ip: req.ip });
-    
-    res.json({ sessions });
-  } catch (err) {
-    logger.error('Failed to get sessions', { error: err.message, ip: req.ip });
-    res.status(500).json({ message: 'Error obteniendo historial' });
-  }
+// ===== HEALTH CHECK MEJORADO =====
+app.get('/health', (req, res) => {
+  const status = initService.getStatus();
+  
+  res.json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    services: status,
+    version: '2.0.0-fixed'
+  });
 });
 
-// Get conversation history for a session
-app.get('/api/history/session/:sessionId', async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    const area = req.session.area;
-    
-    if (!area) {
-      return res.status(401).json({ message: 'No hay sesión activa' });
+// Status endpoint detallado
+app.get('/api/status', (req, res) => {
+  const status = initService.getStatus();
+  
+  res.json({
+    server: {
+      status: 'running',
+      uptime: process.uptime(),
+      memory: process.memoryUsage(),
+      version: process.version
+    },
+    services: status,
+    environment: {
+      nodeEnv: process.env.NODE_ENV || 'development',
+      ollamaUrl: OLLAMA_BASE_URL,
+      port: port
     }
-    
-    const history = await database.getSessionHistory(sessionId);
-    logger.info('Session history retrieved', { 
-      sessionId, 
-      messageCount: history.length,
-      ip: req.ip 
-    });
-    
-    res.json({ history });
-  } catch (err) {
-    logger.error('Failed to get session history', { 
-      sessionId: req.params.sessionId,
-      error: err.message,
-      ip: req.ip 
-    });
-    res.status(500).json({ message: 'Error obteniendo conversación' });
-  }
+  });
 });
 
-// Search conversations
-app.get('/api/history/search', async (req, res) => {
+// Endpoint para obtener configuración de branding
+app.get('/api/branding', (req, res) => {
   try {
-    const { q: searchTerm, limit = 20 } = req.query;
-    const area = req.session.area;
-    
-    if (!area) {
-      return res.status(401).json({ message: 'No hay sesión activa' });
-    }
-    
-    if (!searchTerm) {
-      return res.status(400).json({ message: 'Término de búsqueda requerido' });
-    }
-    
-    const results = await database.searchConversations(area, searchTerm, parseInt(limit));
-    logger.info('Search completed', { 
-      area,
-      searchTerm,
-      resultCount: results.length,
-      ip: req.ip 
-    });
-    
-    res.json({ results });
-  } catch (err) {
-    logger.error('Search failed', { 
-      searchTerm: req.query.q,
-      error: err.message,
-      ip: req.ip 
-    });
-    res.status(500).json({ message: 'Error en búsqueda' });
-  }
-});
-
-// Create new chat session
-app.post('/api/history/new-session', async (req, res) => {
-  try {
-    const area = req.session.area;
-    if (!area) {
-      return res.status(401).json({ message: 'No hay sesión activa' });
-    }
-    
-    const sessionId = await database.createSession(area);
-    req.session.currentChatSession = sessionId;
-    
-    logger.info('New session created', { area, sessionId, ip: req.ip });
-    
-    res.json({ sessionId });
-  } catch (err) {
-    logger.error('Failed to create new session', { 
-      area: req.session.area,
-      error: err.message,
-      ip: req.ip 
-    });
-    res.status(500).json({ message: 'Error creando nueva conversación' });
-  }
-});
-
-// Update session title
-app.put('/api/history/session/:sessionId/title', [
-  body('title')
-    .isString()
-    .trim()
-    .isLength({ min: 1, max: 200 })
-    .withMessage('Título debe tener entre 1 y 200 caracteres')
-], handleValidationErrors, async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    const { title } = req.body;
-    const area = req.session.area;
-    
-    if (!area) {
-      return res.status(401).json({ message: 'No hay sesión activa' });
-    }
-    
-    const updated = await database.updateSessionTitle(sessionId, title);
-    
-    if (updated) {
-      logger.info('Session title updated', { sessionId, title, ip: req.ip });
-      res.json({ message: 'Título actualizado' });
-    } else {
-      res.status(404).json({ message: 'Conversación no encontrada' });
-    }
-  } catch (err) {
-    logger.error('Failed to update session title', {
-      sessionId: req.params.sessionId,
-      error: err.message,
-      ip: req.ip
-    });
-    res.status(500).json({ message: 'Error actualizando título' });
-  }
-});
-
-// Delete session
-app.delete('/api/history/session/:sessionId', async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    const area = req.session.area;
-    
-    if (!area) {
-      return res.status(401).json({ message: 'No hay sesión activa' });
-    }
-    
-    const deleted = await database.deleteSession(sessionId);
-    
-    if (deleted) {
-      // If deleting current session, clear it (don't create new one automatically)
-      if (req.session.currentChatSession === sessionId) {
-        req.session.currentChatSession = null;
-      }
-      
-      logger.info('Session deleted', { sessionId, ip: req.ip });
-      res.json({ message: 'Conversación eliminada' });
-    } else {
-      res.status(404).json({ message: 'Conversación no encontrada' });
-    }
-  } catch (err) {
-    logger.error('Failed to delete session', {
-      sessionId: req.params.sessionId,
-      error: err.message,
-      ip: req.ip
-    });
-    res.status(500).json({ message: 'Error eliminando conversación' });
-  }
-});
-
-// Export conversation as JSON
-app.get('/api/history/export/:sessionId', async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    const { format = 'json' } = req.query;
-    const area = req.session.area;
-    
-    if (!area) {
-      return res.status(401).json({ message: 'No hay sesión activa' });
-    }
-    
-    const history = await database.getSessionHistory(sessionId);
-    
-    if (format === 'json') {
-      res.setHeader('Content-Type', 'application/json');
-      res.setHeader('Content-Disposition', `attachment; filename="chat-${sessionId}.json"`);
-      res.json({
-        sessionId,
-        area,
-        exportDate: new Date().toISOString(),
-        messageCount: history.length,
-        messages: history
-      });
-    } else if (format === 'txt') {
-      let content = `Chat Export - ${area}\n`;
-      content += `Session ID: ${sessionId}\n`;
-      content += `Export Date: ${new Date().toLocaleString()}\n`;
-      content += `Messages: ${history.length}\n\n`;
-      content += '='.repeat(50) + '\n\n';
-      
-      history.forEach((msg, index) => {
-        content += `[${new Date(msg.timestamp).toLocaleString()}] Usuario:\n${msg.user_message}\n\n`;
-        content += `[${new Date(msg.timestamp).toLocaleString()}] Anyelita:\n${msg.bot_response}\n\n`;
-        content += '-'.repeat(30) + '\n\n';
-      });
-      
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="chat-${sessionId}.txt"`);
-      res.send(content);
-    } else {
-      res.status(400).json({ message: 'Formato no soportado. Usa: json, txt' });
-    }
-    
-    logger.info('Export completed', { sessionId, format, messageCount: history.length, ip: req.ip });
-  } catch (err) {
-    logger.error('Export failed', {
-      sessionId: req.params.sessionId,
-      error: err.message,
-      ip: req.ip
-    });
-    res.status(500).json({ message: 'Error exportando conversación' });
+    const brandingConfig = require('./config/branding');
+    const config = brandingConfig.getAll();
+    res.json(config);
+  } catch (error) {
+    console.error('Error obteniendo configuración de branding:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
 
@@ -1218,165 +777,45 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Ruta para health check
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
-  });
-});
-
-// Qdrant endpoints
-app.get('/api/qdrant/status', async (req, res) => {
+// ===== INICIALIZACIÓN Y STARTUP =====
+async function startServer() {
   try {
-    const qdrant = require('./config/qdrant');
-    const status = await qdrant.testConnection();
-    res.json(status);
-  } catch (error) {
-    logger.error('Qdrant status check failed', { error: error.message });
-    res.status(500).json({
-      status: 'error',
-      error: error.message
-    });
-  }
-});
-
-app.get('/api/qdrant/stats', async (req, res) => {
-  try {
-    const qdrant = require('./config/qdrant');
-    const stats = await qdrant.getStats();
-    res.json(stats);
-  } catch (error) {
-    logger.error('Qdrant stats failed', { error: error.message });
-    res.status(500).json({
-      status: 'error', 
-      error: error.message
-    });
-  }
-});
-
-// Document management endpoints
-app.post('/api/documents/upload', upload.array('documents', 10), async (req, res) => {
-  try {
-    const { area = 'general' } = req.body;
+    // Inicializar servicios críticos primero
+    await initializeApp();
     
-    if (!req.files || req.files.length === 0) {
-      return res.status(400).json({ error: 'No files uploaded' });
-    }
-
-    logger.info('📄 Processing document upload', { 
-      fileCount: req.files.length,
-      area,
-      ip: req.ip
+    // Iniciar servidor
+    const server = app.listen(port, () => {
+      const message = `🚀 Luckia Chat Server running on http://localhost:${port}`;
+      console.log(message);
+      logger.info('Server started successfully', { 
+        port, 
+        ollamaUrl: OLLAMA_BASE_URL,
+        nodeEnv: process.env.NODE_ENV || 'development',
+        areasConfigured: Object.keys(areas).length 
+      });
+      
+      // Start process monitoring after server is running
+      startProcessMonitoring();
+      console.log('🔍 Process monitoring started');
     });
-
-    const results = [];
-    const documentProcessor = require('./services/documentProcessor');
-    const qdrant = require('./config/qdrant');
-
-    for (const file of req.files) {
-      try {
-        // Process document
-        const documents = await documentProcessor.processDocument(
-          file.buffer,
-          file.originalname,
-          area,
-          { uploader_ip: req.ip }
-        );
-
-        // Add to Qdrant
-        for (const doc of documents) {
-          await qdrant.addDocument(doc.id, doc.content, doc.metadata, area);
-        }
-
-        results.push({
-          filename: file.originalname,
-          status: 'success',
-          chunks: documents.length,
-          size: file.size
-        });
-
-      } catch (error) {
-        logger.error('Document processing failed', {
-          filename: file.originalname,
-          error: error.message
-        });
-        
-        results.push({
-          filename: file.originalname,
-          status: 'error',
-          error: error.message
-        });
-      }
-    }
-
-    res.json({
-      message: 'Document processing completed',
-      results,
-      processed: results.filter(r => r.status === 'success').length,
-      failed: results.filter(r => r.status === 'error').length
-    });
-
-  } catch (error) {
-    logger.error('Document upload failed', { error: error.message });
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/documents/search', async (req, res) => {
-  try {
-    const { query, area, limit = 5 } = req.query;
     
-    if (!query) {
-      return res.status(400).json({ error: 'Query parameter required' });
-    }
-
-    const qdrant = require('./config/qdrant');
-    const results = await qdrant.searchDocuments(query, area, parseInt(limit));
-
-    res.json({
-      query,
-      area: area || 'all',
-      results,
-      count: results.length
-    });
-
+    // Graceful shutdown
+    const gracefulShutdown = (signal) => {
+      logger.info(`🛑 Received ${signal}, shutting down gracefully`);
+      server.close(() => {
+        logger.info('✅ Server closed successfully');
+        process.exit(0);
+      });
+    };
+    
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+    
   } catch (error) {
-    logger.error('Document search failed', { error: error.message });
-    res.status(500).json({ error: error.message });
+    logger.error('❌ Failed to start server', { error: error.message, stack: error.stack });
+    process.exit(1);
   }
-});
+}
 
-app.get('/api/embeddings/test', async (req, res) => {
-  try {
-    const embeddingService = require('./services/embeddings');
-    const result = await embeddingService.testEmbedding();
-    res.json(result);
-  } catch (error) {
-    logger.error('Embedding test failed', { error: error.message });
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Endpoint para obtener configuración de branding
-app.get('/api/branding', (req, res) => {
-  try {
-    const config = brandingConfig.getAll();
-    res.json(config);
-  } catch (error) {
-    console.error('Error obteniendo configuración de branding:', error);
-    res.status(500).json({ error: 'Error interno del servidor' });
-  }
-});
-
-app.listen(port, () => {
-  const message = `🚀 Backend corriendo en http://localhost:${port}`;
-  console.log(message);
-  logger.info('Server started successfully', { 
-    port, 
-    ollamaUrl: OLLAMA_BASE_URL,
-    nodeEnv: process.env.NODE_ENV || 'development',
-    areasConfigured: Object.keys(areas).length 
-  });
-});
+// Iniciar servidor
+startServer();

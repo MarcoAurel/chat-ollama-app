@@ -7,6 +7,7 @@ import MessageReactions from "./components/MessageReactions";
 import ToastNotification from "./components/ToastNotification";
 import FileDropZone from "./components/FileDropZone";
 import FilePreview from "./components/FilePreview";
+import AdminPanel from "./components/AdminPanel";
 import useKeyboardShortcuts from "./hooks/useKeyboardShortcuts";
 
 function App() {
@@ -36,6 +37,8 @@ function App() {
   const [attachedFiles, setAttachedFiles] = useState([]);
   const [showFileDropZone, setShowFileDropZone] = useState(false);
   const [brandingConfig, setBrandingConfig] = useState(null);
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [sessionData, setSessionData] = useState(null);
   const chatRef = useRef();
   const inputRef = useRef();
 
@@ -58,6 +61,12 @@ function App() {
     setToasts(prev => prev.filter(toast => toast.id !== id));
   };
 
+  // Check if current user has admin privileges
+  const isAdmin = () => {
+    const adminAreas = ['informatica', 'sistemas'];
+    return sessionData && adminAreas.includes(sessionData.area.toLowerCase());
+  };
+
 
   const handleLogin = async () => {
     try {
@@ -68,6 +77,13 @@ function App() {
       
       setAgentConfig(res.data.agent_config);
       setLoggedIn(true);
+      
+      // Store session data for admin panel
+      setSessionData({
+        token: res.data.token,
+        area: area,
+        username: res.data.username || area
+      });
       
       // Load sessions after login
       loadSessions();
@@ -823,6 +839,16 @@ function App() {
                     <span className="text-base">🗑️</span>
                     <span className="hidden sm:inline text-xs">Limpiar</span>
                   </button>
+                  {isAdmin() && (
+                    <button
+                      onClick={() => setShowAdminPanel(true)}
+                      className="flex items-center space-x-2 p-2 rounded-lg bg-blue-500/30 hover:bg-blue-500/40 dark:bg-blue-500/20 dark:hover:bg-blue-500/30 backdrop-blur-sm transition-all duration-200 text-sm font-medium text-white"
+                      title="Panel de administración IT"
+                    >
+                      <span className="text-base">⚙️</span>
+                      <span className="hidden sm:inline text-xs">Admin</span>
+                    </button>
+                  )}
                   <button
                     onClick={handleLogout}
                     className="flex items-center space-x-2 p-2 rounded-lg bg-red-500/30 hover:bg-red-500/40 dark:bg-red-500/20 dark:hover:bg-red-500/30 backdrop-blur-sm transition-all duration-200 text-sm font-medium text-white"
@@ -1237,6 +1263,14 @@ function App() {
             onClose={() => removeToast(toast.id)}
           />
         )), [toasts]
+      )}
+
+      {/* Admin Panel */}
+      {showAdminPanel && (
+        <AdminPanel 
+          sessionData={sessionData}
+          onClose={() => setShowAdminPanel(false)}
+        />
       )}
     </div>
   );

@@ -1,0 +1,40 @@
+Por favor analiza y verifica el estado del servidor Luckia Chat después de las modificaciones aplicadas para resolver el problema de estabilidad. Necesito que verifiques:
+
+**VERIFICACIÓN DE ESTABILIDAD:**
+1. Inicia el servidor con `node index.js` y confirma que:
+   - No se cierre automáticamente después de la inicialización
+   - Muestre los logs de "Critical services ready - server starting"
+   - Permanezca activo sin reiniciar
+
+**VERIFICACIÓN DE SERVICIOS:**
+2. Realiza estas pruebas HTTP:
+   - GET /health (debe mostrar estado de servicios)
+   - GET /api/status (debe mostrar información detallada)
+   - Confirma que responda sin timeouts
+
+**VERIFICACIÓN DE FUNCIONALIDAD BÁSICA:**
+3. Prueba el flujo de login:
+   - POST /api/login con área "informatica" y contraseña correcta
+   - Verifica que retorne token JWT y configuración del agente
+
+**VERIFICACIÓN DE INICIALIZACIÓN PROGRESIVA:**
+4. Analiza los logs durante startup para confirmar:
+   - Database se inicializa primero (crítico)
+   - Configuration se carga después (crítico)
+   - Qdrant y Embeddings se inicializan en background (opcional)
+   - El servidor está disponible antes de que terminen los servicios opcionales
+
+**DEBUGGING SI HAY PROBLEMAS:**
+5. Si encuentra issues:
+   - Revisa logs de error.log y combined.log
+   - Verifica que services/initialization.js existe
+   - Confirma que todas las dependencias están instaladas
+   - Chequea conectividad a Ollama (172.19.5.212:11434)
+
+**PRUEBA DE CHAT (si el servidor está estable):**
+6. Realiza una prueba básica de chat:
+   - POST /api/chat con prompt simple
+   - Verifica respuesta de Ollama
+   - Confirma que no crashee durante el procesamiento
+
+Por favor reporta paso a paso qué funciona y qué falla, incluyendo logs específicos si hay errores.

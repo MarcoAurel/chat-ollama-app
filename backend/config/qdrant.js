@@ -47,10 +47,13 @@ class QdrantManager {
     } catch (error) {
       logger.error('❌ Failed to initialize Qdrant', { 
         error: error.message,
-        stack: error.stack,
         host: process.env.QDRANT_HOST || '192.168.1.206',
         port: process.env.QDRANT_PORT || 6333
       });
+      
+      // Continue without Qdrant for development
+      logger.warn('⚠️ Running in NO-QDRANT mode - RAG features disabled');
+      this.initialized = false;
       return false;
     }
   }
@@ -214,6 +217,106 @@ class QdrantManager {
     }
     
     return await embeddingService.generateEmbedding(text);
+  }
+
+  // Bulk upsert for admin document uploads
+  async upsert(documents) {
+    if (!this.initialized) {
+      throw new Error('Qdrant not initialized');
+    }
+    
+    try {
+      await this.client.upsert(this.collections.documents, {
+        wait: true,
+        points: documents
+      });
+      
+      logger.info('📚 Bulk upsert completed', { count: documents.length });
+      return true;
+    } catch (error) {
+      logger.error('Failed to bulk upsert', { error: error.message });
+      throw error;
+    }
+  }
+
+  // Search with filter for admin operations
+  async search(query, filter = null, limit = 10) {
+    if (!this.initialized) {
+      throw new Error('Qdrant not initialized');
+    }
+    
+    try {
+      let searchParams;
+      
+      if (query && query.trim()) {
+        const queryEmbedding = await this.generateEmbedding(query);
+        searchParams = {
+          vector: queryEmbedding,
+          limit,
+          with_payload: true,
+          with_vector: false,
+          score_threshold: 0.1
+        };
+      } else {
+        // Scroll through all documents if no query
+        const scrollResult = await this.client.scroll(this.collections.documents, {
+          limit,
+          with_payload: true,
+          with_vector: false
+        });
+        return scrollResult.points;
+      }
+      
+      if (filter) {
+        searchParams.filter = filter;
+      }
+      
+      const results = await this.client.search(this.collections.documents, searchParams);
+      return results;
+      
+    } catch (error) {
+      logger.error('Failed to search with filter', { error: error.message });
+      throw error;
+    }
+  }
+
+  // Delete documents by IDs
+  async delete(ids) {
+    if (!this.initialized) {
+      throw new Error('Qdrant not initialized');
+    }
+    
+    try {
+      await this.client.delete(this.collections.documents, {
+        wait: true,
+        points: ids
+      });
+      
+      logger.info('🗑️ Documents deleted', { count: ids.length });
+      return true;
+    } catch (error) {
+      logger.error('Failed to delete documents', { error: error.message });
+      throw error;
+    }
+  }
+
+  // Get collection info for admin stats
+  async getCollectionInfo() {
+    if (!this.initialized) {
+      throw new Error('Qdrant not initialized');
+    }
+    
+    try {
+      const info = await this.client.getCollection(this.collections.documents);
+      return {
+        points_count: info.points_count || 0,
+        vectors_count: info.vectors_count || 0,
+        status: info.status || 'unknown'
+      };
+    } catch (error) {
+      logger.error('Failed to get collection info', { error: error.message });
+      return { points_count: 0, vectors_count: 0, status: 'error' };
+    }
   }
 
   async getStats() {

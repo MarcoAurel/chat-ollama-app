@@ -11,7 +11,12 @@
       "Bash(cmd /c:*)",
       "Bash(PORT=3002 node index.js)",
       "Bash(cmd.exe:*)",
-      "Read(d:\\Proyectos\\chat-ollama-app/**)"
+      "Read(d:\\Proyectos\\chat-ollama-app/**)",
+      "Bash(npm start)",
+      "Bash(timeout:*)",
+      "Bash(PORT=3002 node index-simple.js)",
+      "Bash(mv:*)",
+      "Bash(grep:*)"
     ],
     "deny": [],
     "ask": []

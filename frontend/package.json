@@ -15,6 +15,7 @@
   "dependencies": {
     "@types/react-syntax-highlighter": "^15.5.13",
     "axios": "^1.11.0",
+    "lucide-react": "^0.542.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-markdown": "^10.1.0",

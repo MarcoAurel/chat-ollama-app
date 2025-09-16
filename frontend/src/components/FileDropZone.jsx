@@ -14,6 +14,8 @@ const FileDropZone = ({ onFileSelect, darkMode = false, disabled = false }) => {
     'application/pdf': ['.pdf'],
     'application/msword': ['.doc'],
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+    'application/vnd.ms-excel': ['.xls'],
     'image/png': ['.png'],
     'image/jpeg': ['.jpg', '.jpeg'],
     'image/gif': ['.gif'],

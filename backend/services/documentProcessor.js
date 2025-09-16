@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
+const xlsx = require('xlsx');
+const csv = require('csv-parser');
 const winston = require('winston');
 const crypto = require('crypto');
 
@@ -25,7 +27,17 @@ class DocumentProcessor {
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       'text/plain',
       'text/markdown',
-      'application/json'
+      'application/json',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
+      'application/vnd.ms-excel', // .xls
+      'text/csv', // .csv
+      // Image types for OCR
+      'image/png',
+      'image/jpeg',
+      'image/jpg',
+      'image/gif',
+      'image/bmp',
+      'image/tiff'
     ];
   }
 
@@ -118,6 +130,21 @@ class DocumentProcessor {
       case 'application/json':
         return this.extractJsonContent(buffer);
         
+      case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+      case 'application/vnd.ms-excel':
+        return this.extractExcelContent(buffer, filename);
+        
+      case 'text/csv':
+        return await this.extractCsvContent(buffer);
+        
+      case 'image/png':
+      case 'image/jpeg':  
+      case 'image/jpg':
+      case 'image/gif':
+      case 'image/bmp':
+      case 'image/tiff':
+        return await this.extractImageContent(buffer, filename);
+        
       default:
         throw new Error(`Content extraction not implemented for ${fileType}`);
     }
@@ -173,13 +200,183 @@ class DocumentProcessor {
   }
 
   async extractPdfWithOCR(buffer) {
-    logger.info('🔍 OCR extraction attempted for image-based PDF');
-    logger.warn('📸 OCR requires additional system dependencies (ImageMagick/GraphicsMagick)');
-    logger.info('💡 Alternative: Convert PDF to text manually or use different PDF format');
-    
-    // For now, return empty string to avoid storing invalid content
-    // This can be extended when proper OCR dependencies are installed
-    return '';
+    try {
+      logger.info('🔍 Attempting OCR extraction via remote service for image-based PDF');
+      
+      // Check if OCR service is enabled
+      const ocrServiceUrl = process.env.OCR_SERVICE_URL;
+      const ocrEnabled = process.env.OCR_ENABLED === 'true';
+      
+      if (!ocrEnabled || !ocrServiceUrl) {
+        logger.info('📸 OCR service disabled or not configured');
+        logger.info('💡 Set OCR_ENABLED=true and OCR_SERVICE_URL in .env to enable');
+        return '';
+      }
+
+      logger.info('🌐 Sending document to OCR service', { serviceUrl: ocrServiceUrl });
+      
+      const axios = require('axios');
+      const FormData = require('form-data');
+      
+      // Create form data with the PDF buffer
+      const formData = new FormData();
+      formData.append('file', buffer, {
+        filename: 'document.pdf',
+        contentType: 'application/pdf'
+      });
+      
+      const timeout = parseInt(process.env.OCR_SERVICE_TIMEOUT) || 180000; // 3 minutes default
+      
+      try {
+        const response = await axios.post(`${ocrServiceUrl}/process`, formData, {
+          headers: {
+            ...formData.getHeaders(),
+          },
+          timeout: timeout,
+          maxContentLength: 50 * 1024 * 1024, // 50MB
+          maxBodyLength: 50 * 1024 * 1024
+        });
+        
+        if (response.data && response.data.success) {
+          const extractedText = response.data.extractedText;
+          
+          logger.info('✅ OCR service extraction successful', { 
+            contentLength: extractedText?.length || 0,
+            serviceResponse: response.data.filename
+          });
+          
+          return extractedText || '';
+        } else {
+          logger.warn('⚠️ OCR service returned unsuccessful result', { 
+            response: response.data 
+          });
+          return '';
+        }
+        
+      } catch (serviceError) {
+        if (serviceError.code === 'ECONNREFUSED') {
+          logger.error('❌ OCR service connection refused', { 
+            serviceUrl: ocrServiceUrl,
+            error: 'Service may be down' 
+          });
+        } else if (serviceError.code === 'ETIMEDOUT') {
+          logger.error('⏰ OCR service timeout', { 
+            serviceUrl: ocrServiceUrl,
+            timeout: timeout 
+          });
+        } else {
+          logger.error('❌ OCR service error', { 
+            serviceUrl: ocrServiceUrl,
+            error: serviceError.message 
+          });
+        }
+        
+        return '';
+      }
+      
+    } catch (ocrError) {
+      logger.error('❌ OCR extraction failed', { 
+        error: ocrError.message,
+        stack: ocrError.stack 
+      });
+      
+      logger.info('💡 Troubleshooting:');
+      logger.info('  - Check OCR service status: http://172.19.5.212:3002/health');
+      logger.info('  - Verify OCR_SERVICE_URL in .env');
+      logger.info('  - Ensure network connectivity to OCR service');
+      
+      return '';
+    }
+  }
+
+  async extractImageContent(buffer, filename) {
+    try {
+      logger.info('🖼️ Processing image file via OCR service', { filename });
+      
+      // Check if OCR service is enabled
+      const ocrServiceUrl = process.env.OCR_SERVICE_URL;
+      const ocrEnabled = process.env.OCR_ENABLED === 'true';
+      
+      if (!ocrEnabled || !ocrServiceUrl) {
+        logger.warn('📸 OCR service disabled for image processing', { filename });
+        return 'Imagen procesada - contenido no disponible (OCR deshabilitado)';
+      }
+
+      const axios = require('axios');
+      const FormData = require('form-data');
+      
+      // Create form data with the image buffer
+      const formData = new FormData();
+      formData.append('file', buffer, {
+        filename: filename,
+        contentType: this.getImageContentType(filename)
+      });
+      
+      const timeout = parseInt(process.env.OCR_SERVICE_TIMEOUT) || 180000;
+      
+      try {
+        const response = await axios.post(`${ocrServiceUrl}/process`, formData, {
+          headers: {
+            ...formData.getHeaders(),
+          },
+          timeout: timeout,
+          maxContentLength: 50 * 1024 * 1024, // 50MB
+          maxBodyLength: 50 * 1024 * 1024
+        });
+        
+        if (response.data && response.data.success) {
+          const extractedText = response.data.extractedText;
+          
+          if (extractedText && extractedText.trim().length > 0) {
+            logger.info('✅ Image OCR extraction successful', { 
+              filename,
+              contentLength: extractedText.length
+            });
+            
+            return `=== CONTENIDO EXTRAÍDO DE IMAGEN: ${filename} ===\n${extractedText}`;
+          } else {
+            logger.info('📷 Image processed but no text detected', { filename });
+            return `Imagen procesada: ${filename} - No se detectó texto`;
+          }
+        } else {
+          logger.warn('⚠️ OCR service returned unsuccessful result for image', { 
+            filename,
+            response: response.data 
+          });
+          return `Imagen procesada: ${filename} - Error en OCR`;
+        }
+        
+      } catch (serviceError) {
+        logger.error('❌ OCR service error for image', { 
+          filename,
+          serviceUrl: ocrServiceUrl,
+          error: serviceError.message 
+        });
+        
+        return `Imagen procesada: ${filename} - Servicio OCR no disponible`;
+      }
+      
+    } catch (error) {
+      logger.error('❌ Image processing failed', { 
+        filename,
+        error: error.message 
+      });
+      
+      return `Imagen procesada: ${filename} - Error de procesamiento`;
+    }
+  }
+
+  getImageContentType(filename) {
+    const extension = path.extname(filename).toLowerCase();
+    const typeMap = {
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.bmp': 'image/bmp',
+      '.tiff': 'image/tiff'
+    };
+    return typeMap[extension] || 'image/png';
   }
 
   async extractDocxContent(buffer) {
@@ -200,6 +397,120 @@ class DocumentProcessor {
     } catch (error) {
       logger.error('JSON extraction failed', { error: error.message });
       throw new Error(`JSON extraction failed: ${error.message}`);
+    }
+  }
+
+  extractExcelContent(buffer, filename) {
+    try {
+      logger.info('📊 Processing Excel file', { filename });
+      
+      const workbook = xlsx.read(buffer, { type: 'buffer' });
+      let extractedContent = '';
+      
+      // Process all sheets
+      workbook.SheetNames.forEach((sheetName, index) => {
+        const worksheet = workbook.Sheets[sheetName];
+        
+        // Convert sheet to JSON for better structure
+        const jsonData = xlsx.utils.sheet_to_json(worksheet, { 
+          header: 1, // Use array of arrays format
+          defval: '' // Default value for empty cells
+        });
+        
+        extractedContent += `\n=== HOJA ${index + 1}: ${sheetName} ===\n`;
+        
+        if (jsonData.length > 0) {
+          // Process as table with headers
+          jsonData.forEach((row, rowIndex) => {
+            if (row.length > 0) {
+              const rowText = row.join(' | ');
+              extractedContent += `${rowText}\n`;
+              
+              // Add separator after header row
+              if (rowIndex === 0) {
+                extractedContent += `${'-'.repeat(rowText.length)}\n`;
+              }
+            }
+          });
+        } else {
+          extractedContent += '(Hoja vacía)\n';
+        }
+        
+        extractedContent += '\n';
+      });
+      
+      logger.info('✅ Excel extraction successful', { 
+        filename,
+        sheets: workbook.SheetNames.length,
+        contentLength: extractedContent.length
+      });
+      
+      return extractedContent;
+    } catch (error) {
+      logger.error('Excel extraction failed', { filename, error: error.message });
+      throw new Error(`Excel extraction failed: ${error.message}`);
+    }
+  }
+
+  async extractCsvContent(buffer) {
+    try {
+      logger.info('📄 Processing CSV file');
+      
+      const csvContent = buffer.toString('utf-8');
+      const results = [];
+      
+      return new Promise((resolve, reject) => {
+        const stream = require('stream');
+        const readable = new stream.Readable();
+        readable._read = () => {}; // _read is required but you can noop it
+        readable.push(csvContent);
+        readable.push(null);
+        
+        readable
+          .pipe(csv({
+            skipEmptyLines: true,
+            trim: true
+          }))
+          .on('data', (data) => results.push(data))
+          .on('end', () => {
+            try {
+              let extractedContent = '';
+              
+              if (results.length > 0) {
+                // Get headers
+                const headers = Object.keys(results[0]);
+                extractedContent += `=== ARCHIVO CSV ===\n`;
+                extractedContent += `${headers.join(' | ')}\n`;
+                extractedContent += `${'-'.repeat(headers.join(' | ').length)}\n`;
+                
+                // Add data rows
+                results.forEach(row => {
+                  const rowValues = headers.map(header => row[header] || '');
+                  extractedContent += `${rowValues.join(' | ')}\n`;
+                });
+              } else {
+                extractedContent = '(Archivo CSV vacío)';
+              }
+              
+              logger.info('✅ CSV extraction successful', { 
+                rows: results.length,
+                contentLength: extractedContent.length
+              });
+              
+              resolve(extractedContent);
+            } catch (error) {
+              logger.error('CSV processing failed', { error: error.message });
+              reject(new Error(`CSV processing failed: ${error.message}`));
+            }
+          })
+          .on('error', (error) => {
+            logger.error('CSV parsing failed', { error: error.message });
+            reject(new Error(`CSV parsing failed: ${error.message}`));
+          });
+      });
+    } catch (error) {
+      logger.error('CSV extraction failed', { error: error.message });
+      throw new Error(`CSV extraction failed: ${error.message}`);
     }
   }
 
@@ -270,7 +581,16 @@ class DocumentProcessor {
       '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       '.txt': 'text/plain',
       '.md': 'text/markdown',
-      '.json': 'application/json'
+      '.json': 'application/json',
+      '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      '.xls': 'application/vnd.ms-excel',
+      '.csv': 'text/csv',
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.bmp': 'image/bmp',
+      '.tiff': 'image/tiff'
     };
     
     return typeMap[extension] || 'text/plain';

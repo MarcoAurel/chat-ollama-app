@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm start)",
+      "Bash(curl:*)",
+      "Read(//d/Proyectos/chat-ollama-app/frontend/**)",
+      "Bash(npm run dev:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
