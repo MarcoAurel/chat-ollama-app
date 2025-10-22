@@ -4,7 +4,8 @@
       "Bash(npm start)",
       "Bash(curl:*)",
       "Read(//d/Proyectos/chat-ollama-app/frontend/**)",
-      "Bash(npm run dev:*)"
+      "Bash(npm run dev:*)",
+      "Read(//d/Proyectos/chat-ollama-app/**)"
     ],
     "deny": [],
     "ask": []

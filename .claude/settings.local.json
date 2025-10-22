@@ -16,7 +16,9 @@
       "Bash(timeout:*)",
       "Bash(PORT=3002 node index-simple.js)",
       "Bash(mv:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(findstr /i \"pass\")",
+      "Bash(cat .env)"
     ],
     "deny": [],
     "ask": []

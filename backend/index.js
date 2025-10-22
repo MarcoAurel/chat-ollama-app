@@ -168,8 +168,12 @@ const JWT_SECRET = process.env.SESSION_SECRET || 'luckia-chat-super-secret-key-c
 // Variables globales para servicios (se inicializan de manera asíncrona)
 let areas = {};
 let database = null;
-let qdrantService = null;
+let supabaseService = null;
 let embeddingService = null;
+
+// Variables globales para acceso desde otros archivos
+global.supabaseService = null;
+global.documentProcessorService = null;
 
 // Rate limiting - MUY generoso para no afectar UX
 const limiter = rateLimit({
@@ -345,7 +349,7 @@ async function initializeApp() {
     
     logger.info('✅ Critical services ready - server starting');
     
-    // Los servicios opcionales (Qdrant, Embeddings) se inicializan en background
+    // Los servicios opcionales (Supabase, Embeddings) se inicializan en background
     // El servidor puede funcionar sin ellos
     
     return true;
@@ -468,9 +472,9 @@ app.post('/api/chat', validateChat, handleValidationErrors, async (req, res) => 
       // 🧠 RAG: Search for relevant documents (optional)
       let ragContext = '';
       try {
-        const qdrant = getOptionalService('qdrant');
-        if (qdrant) {
-          const searchResults = await qdrant.searchDocuments(prompt, area, 3);
+        const supabase = getOptionalService('supabase');
+        if (supabase) {
+          const searchResults = await supabase.searchDocuments(prompt, area, 3);
           
           if (searchResults && searchResults.length > 0) {
             logger.info('📚 RAG: Found relevant documents', { 
@@ -490,7 +494,7 @@ app.post('/api/chat', validateChat, handleValidationErrors, async (req, res) => 
             ragContext += '✨ INSTRUCCIÓN: Responde basándote principalmente en el contexto proporcionado. Si la información no está disponible en el contexto, indícalo claramente.\n\n';
           }
         } else {
-          logger.info('📚 RAG: Qdrant not available, continuing without context search');
+          logger.info('📚 RAG: Supabase not available, continuing without context search');
         }
       } catch (ragError) {
         logger.error('RAG search failed', { error: ragError.message });
@@ -597,9 +601,9 @@ app.post('/api/chat', validateChat, handleValidationErrors, async (req, res) => 
     // 🧠 RAG: Search for relevant documents (non-streaming)
     let ragContext = '';
     try {
-      const qdrant = getOptionalService('qdrant');
-      if (qdrant) {
-        const searchResults = await qdrant.searchDocuments(prompt, area, 3);
+      const supabase = getOptionalService('supabase');
+      if (supabase) {
+        const searchResults = await supabase.searchDocuments(prompt, area, 3);
         
         if (searchResults && searchResults.length > 0) {
           logger.info('📚 RAG: Found relevant documents (non-streaming)', { 
@@ -759,6 +763,137 @@ app.get('/api/branding', (req, res) => {
   } catch (error) {
     console.error('Error obteniendo configuración de branding:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ===== ADMIN PANEL ENDPOINTS =====
+
+// Middleware de autenticación para admin
+const requireAuth = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'No token provided' });
+  }
+
+  const token = authHeader.substring(7);
+  try {
+    const decoded = jwt.verify(token, process.env.SESSION_SECRET || 'luckia-chat-super-secret-key-change-in-production-2025');
+    req.user = decoded;
+    next();
+  } catch (error) {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+};
+
+// Endpoint para subir documentos
+app.post('/api/admin/documents/upload', requireAuth, upload.array('documents'), async (req, res) => {
+  try {
+    console.log('📤 Upload request received:', {
+      files: req.files?.length || 0,
+      user: req.user?.area
+    });
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: 'No files uploaded' });
+    }
+
+    const supabase = getOptionalService('supabase');
+    const docProcessor = getOptionalService('documentProcessor');
+
+    console.log('🔍 Services status:', {
+      supabase: supabase ? 'available' : 'not available',
+      supabaseInitialized: supabase?.initialized || false,
+      docProcessor: docProcessor ? 'available' : 'not available'
+    });
+
+    if (!supabase || !supabase.initialized) {
+      return res.status(503).json({ error: 'Supabase not available' });
+    }
+
+    if (!docProcessor) {
+      return res.status(503).json({ error: 'Document processor not available' });
+    }
+
+    const results = [];
+
+    for (const file of req.files) {
+      try {
+        console.log(`📄 Processing file: ${file.originalname}`);
+
+        // Procesar el documento
+        const processedDoc = await docProcessor.processDocument(file, req.user.area);
+        console.log(`✅ Document processed: ${processedDoc.id}`);
+
+        // Agregar a Supabase
+        await supabase.addDocument(
+          processedDoc.id,
+          processedDoc.content,
+          processedDoc.metadata,
+          req.user.area
+        );
+        console.log(`✅ Document added to Supabase: ${processedDoc.id}`);
+
+        results.push({
+          filename: file.originalname,
+          status: 'success',
+          id: processedDoc.id
+        });
+
+      } catch (error) {
+        console.error(`❌ Error processing ${file.originalname}:`, error.message);
+
+        results.push({
+          filename: file.originalname,
+          status: 'error',
+          error: error.message
+        });
+      }
+    }
+
+    console.log('✅ Upload completed:', results);
+    res.json({
+      message: 'Upload completed',
+      results
+    });
+
+  } catch (error) {
+    console.error('❌ Upload error:', error.message);
+    res.status(500).json({ error: 'Upload failed', details: error.message });
+  }
+});
+
+// Endpoint para obtener estadísticas de documentos
+app.get('/api/admin/documents/stats', requireAuth, async (req, res) => {
+  try {
+    const supabase = getOptionalService('supabase');
+
+    if (!supabase || !supabase.initialized) {
+      return res.json({
+        supabase_status: 'disconnected',
+        documents_count: 0,
+        collections: {},
+        message: 'Supabase not available'
+      });
+    }
+
+    const collectionInfo = await supabase.getCollectionInfo();
+    const stats = await supabase.getStats();
+
+    res.json({
+      supabase_status: 'connected',
+      documents_count: collectionInfo.points_count || 0,
+      collections: stats,
+      message: 'Connected to Supabase successfully'
+    });
+
+  } catch (error) {
+    logger.error('Error getting admin stats', { error: error.message });
+    res.status(500).json({
+      error: 'Failed to get stats',
+      supabase_status: 'error',
+      documents_count: 0,
+      collections: {}
+    });
   }
 });
 

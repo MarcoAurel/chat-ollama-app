@@ -5,7 +5,7 @@ class InitializationService {
   constructor() {
     this.initialized = {
       database: false,
-      qdrant: false,
+      supabase: false,
       embeddings: false,
       config: false
     };
@@ -66,41 +66,41 @@ class InitializationService {
     }
   }
 
-  async initializeQdrant() {
-    if (this.initialized.qdrant) return this.services.qdrant;
+  async initializeSupabase() {
+    if (this.initialized.supabase) return this.services.supabase;
     
     try {
-      this.logger.info('🔍 Initializing Qdrant (async)...');
+      this.logger.info('🔍 Initializing Supabase (async)...');
       
       // Use setTimeout to make it truly async and non-blocking
-      const qdrant = await new Promise((resolve, reject) => {
+      const supabase = await new Promise((resolve, reject) => {
         setTimeout(async () => {
           try {
-            const qdrantService = require('../config/qdrant');
-            await qdrantService.initialize();
-            resolve(qdrantService);
+            const supabaseService = require('../config/supabase');
+            await supabaseService.initialize();
+            resolve(supabaseService);
           } catch (error) {
-            // Don't fail the whole app if Qdrant is not available
-            this.logger.warn('⚠️ Qdrant initialization failed (continuing without RAG):', error.message);
+            // Don't fail the whole app if Supabase is not available
+            this.logger.warn('⚠️ Supabase initialization failed (continuing without RAG):', error.message);
             resolve(null);
           }
         }, 100); // Small delay to allow event loop to continue
       });
       
-      this.services.qdrant = qdrant;
-      this.initialized.qdrant = true;
+      this.services.supabase = supabase;
+      this.initialized.supabase = true;
       
-      if (qdrant) {
-        this.logger.info('✅ Qdrant initialized successfully');
+      if (supabase) {
+        this.logger.info('✅ Supabase initialized successfully');
       } else {
-        this.logger.warn('⚠️ Qdrant not available - RAG features disabled');
+        this.logger.warn('⚠️ Supabase not available - RAG features disabled');
       }
       
-      return qdrant;
+      return supabase;
     } catch (error) {
-      this.logger.warn('⚠️ Qdrant initialization failed:', error.message);
-      this.services.qdrant = null;
-      this.initialized.qdrant = true;
+      this.logger.warn('⚠️ Supabase initialization failed:', error.message);
+      this.services.supabase = null;
+      this.initialized.supabase = true;
       return null;
     }
   }
@@ -167,7 +167,7 @@ class InitializationService {
       setTimeout(async () => {
         try {
           this.logger.info('🔄 Starting background services...');
-          await this.initializeQdrant();
+          await this.initializeSupabase();
           await this.initializeEmbeddings();
           this.logger.info('✅ All services initialization complete');
         } catch (error) {
@@ -199,7 +199,7 @@ class InitializationService {
       services: {
         database: !!this.services.database,
         areas: !!this.services.areas,
-        qdrant: !!this.services.qdrant,
+        supabase: !!this.services.supabase,
         embeddings: !!this.services.embeddings && this.services.embeddings.initialized
       }
     };

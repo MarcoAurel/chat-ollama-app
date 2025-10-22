@@ -15,7 +15,7 @@ const AdminPanel = ({ sessionData, onClose }) => {
 
   const fetchStats = async () => {
     try {
-      const response = await fetch('/api/admin/documents/stats', {
+      const response = await fetch('http://localhost:3002/documents/stats', {
         headers: {
           'Authorization': `Bearer ${sessionData.token}`
         }
@@ -50,7 +50,7 @@ const AdminPanel = ({ sessionData, onClose }) => {
     });
 
     try {
-      const response = await fetch('/api/admin/documents/upload', {
+      const response = await fetch('http://localhost:3002/documents/upload', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${sessionData.token}`
